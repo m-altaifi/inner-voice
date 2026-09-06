@@ -15,6 +15,24 @@ use std::time::Duration;
 const BETAS: &str = "fast-mode-2026-02-01,server-side-fallback-2026-07-01";
 const MAX_TOKENS: u32 = 400;
 
+// The `allow(dead_code)` here and on `Lane`, `research` and `cancel_research`
+// is because the panel's F8 wiring lands after this: the lane has tests but no
+// caller in the binary yet. Per item rather than a module-wide
+// `#![allow(dead_code)]`, so they come off with that wiring instead of hiding
+// real rot in `coach.rs` forever.
+/// The slow lane's system prompt. `research.md` beside `prompt.md` overrides
+/// it (read in `main`); this is what runs when that file is absent.
+#[allow(dead_code)]
+pub const RESEARCH_PROMPT: &str = "You are researching one moment of a live call for the user, who \
+reads a heads-up panel and decides what to say. Answer the question implied by the newest THEM \
+line, in depth: what is established, what is uncertain, and the one question that would settle \
+it. Use the reference excerpts and cite them as [filename, passage N]. Never invent facts about \
+the user's company, product or numbers — say what is missing instead. Plain text, short \
+paragraphs, no markdown headers.";
+
+/// Research answers a question, not a glance: room to reason, not 2–4 lines.
+const RESEARCH_MAX_TOKENS: u32 = 2_000;
+
 /// Every turn goes to the same host, so the connection should be opened once.
 ///
 /// `ureq::post` is documented as running on a *use-once* agent: it paid a fresh
@@ -40,6 +58,22 @@ pub struct Coach {
     seq: Arc<AtomicU64>,
     jobs: Sender<(u64, String)>,
     pending: Receiver<(u64, String)>,
+    research: Lane,
+}
+
+/// The slow lane: its own worker, its own generation counter, one job at a
+/// time. It exists so that a 30 s research answer never queues behind or in
+/// front of the ~1 s advice the fast lane is for.
+#[allow(dead_code)]
+struct Lane {
+    seq: Arc<AtomicU64>,
+    /// The id whose `ToolStart` was announced and not yet closed, else 0.
+    /// Whoever swaps it to 0 first — the worker finishing or a cancel — is the
+    /// one that sends `ToolEnd`; a second end for the same id would replace a
+    /// finished result on the panel with "cancelled".
+    open: Arc<AtomicU64>,
+    jobs: Sender<(u64, String, String)>,
+    pending: Receiver<(u64, String, String)>,
 }
 
 impl Coach {
@@ -60,6 +94,7 @@ impl Coach {
         let (jobs, pending) = bounded::<(u64, String)>(1);
         let seq = Arc::new(AtomicU64::new(0));
         let (rx, live, output) = (pending.clone(), seq.clone(), tx.clone());
+        let advice_provider = provider.clone();
         std::thread::spawn(move || {
             let agent = pooled_agent();
             while let Ok((generation, transcript)) = rx.recv() {
@@ -68,7 +103,7 @@ impl Coach {
                 }
                 if let Err(e) = stream(
                     &agent,
-                    &provider,
+                    &advice_provider,
                     &prompt,
                     &transcript,
                     generation,
@@ -81,11 +116,63 @@ impl Coach {
                 }
             }
         });
+        let research = {
+            let (jobs, pending) = bounded::<(u64, String, String)>(1);
+            let seq = Arc::new(AtomicU64::new(0));
+            let open = Arc::new(AtomicU64::new(0));
+            let (rx, live, owner, output, provider) = (
+                pending.clone(),
+                seq.clone(),
+                open.clone(),
+                tx.clone(),
+                provider.clone(),
+            );
+            std::thread::spawn(move || {
+                let agent = pooled_agent();
+                while let Ok((generation, system, context)) = rx.recv() {
+                    if live.load(Ordering::SeqCst) != generation {
+                        continue;
+                    }
+                    let mut text = String::new();
+                    let outcome = request(
+                        &agent,
+                        &provider,
+                        &system,
+                        &context,
+                        RESEARCH_MAX_TOKENS,
+                        generation,
+                        &live,
+                        &mut |t| {
+                            text.push_str(&t);
+                            Ok(())
+                        },
+                    );
+                    let result = match outcome {
+                        Ok(true) => Ok(text),
+                        Ok(false) => continue, // superseded; its successor announced itself
+                        Err(e) => Err(e.to_string()),
+                    };
+                    if owner
+                        .compare_exchange(generation, 0, Ordering::SeqCst, Ordering::SeqCst)
+                        .is_ok()
+                    {
+                        let _ = output.send(Msg::ToolEnd(generation, result));
+                    }
+                }
+            });
+            Lane {
+                seq,
+                open,
+                jobs,
+                pending,
+            }
+        };
         Self {
             tx,
             seq,
             jobs,
             pending,
+            research,
         }
     }
 
@@ -101,11 +188,46 @@ impl Coach {
         let _ = self.pending.try_recv();
         let _ = self.jobs.try_send((seq, transcript));
     }
+
+    /// Start a research job. Announces `ToolStart(id)` at once — the panel
+    /// counts the wait — and returns the id so a caller can correlate.
+    #[allow(dead_code)]
+    pub fn research(&self, system: String, context: String) -> u64 {
+        let lane = &self.research;
+        let id = lane.seq.fetch_add(1, Ordering::SeqCst) + 1;
+        lane.open.store(id, Ordering::SeqCst);
+        let _ = self.tx.send(Msg::ToolStart(id));
+        let _ = lane.pending.try_recv();
+        let _ = lane.jobs.try_send((id, system, context));
+        id
+    }
+
+    /// Retire the running research job, if there is one.
+    ///
+    /// Same rule as `cancel`: a cancel has no successor, so it must close the
+    /// generation it retires or the panel says "researching" forever. It only
+    /// speaks when it wins the `open` token — a job the worker already
+    /// finished, or nothing running at all, gets no second "cancelled" end.
+    #[allow(dead_code)]
+    pub fn cancel_research(&self) {
+        let lane = &self.research;
+        let retired = lane.seq.fetch_add(1, Ordering::SeqCst);
+        let _ = lane.pending.try_recv();
+        if retired != 0
+            && lane
+                .open
+                .compare_exchange(retired, 0, Ordering::SeqCst, Ordering::SeqCst)
+                .is_ok()
+        {
+            let _ = self.tx.send(Msg::ToolEnd(retired, Err("cancelled".into())));
+        }
+    }
 }
 
 impl Drop for Coach {
     fn drop(&mut self) {
         self.seq.fetch_add(1, Ordering::SeqCst);
+        self.research.seq.fetch_add(1, Ordering::SeqCst);
     }
 }
 
@@ -475,5 +597,76 @@ mod tests {
         assert_eq!(b["system"][0]["cache_control"]["type"], "ephemeral");
 
         assert_eq!(body(&p(Wire::OpenAi), "s", "u", 2_000)["max_tokens"], 2_000);
+    }
+
+    /// A provider that refuses the connection at once, so the worker's fate
+    /// is deterministic without any network.
+    fn refused() -> Provider {
+        Provider {
+            url: "http://127.0.0.1:1",
+            model: "test".into(),
+            key: "test".into(),
+            wire: Wire::OpenAi,
+        }
+    }
+
+    /// Every `ToolEnd` that arrives within `secs`.
+    fn tool_ends(rx: &Receiver<Msg>, secs: u64) -> Vec<(u64, std::result::Result<String, String>)> {
+        let deadline = std::time::Instant::now() + Duration::from_secs(secs);
+        let mut ends = Vec::new();
+        while std::time::Instant::now() < deadline {
+            while let Ok(m) = rx.try_recv() {
+                if let Msg::ToolEnd(id, r) = m {
+                    ends.push((id, r));
+                }
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        ends
+    }
+
+    #[test]
+    fn research_announces_its_job_and_closes_it_exactly_once() {
+        let (tx, rx) = crossbeam_channel::unbounded();
+        let coach = Coach::new(refused(), String::new(), tx);
+        let id = coach.research("sys".into(), "ctx".into());
+        assert!(matches!(rx.recv().unwrap(), Msg::ToolStart(i) if i == id));
+        let ends = tool_ends(&rx, 3);
+        assert_eq!(ends.len(), 1, "one job, one end: {ends:?}");
+        assert_eq!(ends[0].0, id);
+        assert!(
+            ends[0].1.is_err(),
+            "a refused connection is reported, not swallowed"
+        );
+    }
+
+    #[test]
+    fn cancelling_research_closes_it_once_and_a_stray_cancel_says_nothing() {
+        let (tx, rx) = crossbeam_channel::unbounded();
+        let coach = Coach::new(refused(), String::new(), tx);
+        coach.cancel_research();
+        assert!(tool_ends(&rx, 1).is_empty(), "nothing was running");
+        let id = coach.research("sys".into(), "ctx".into());
+        coach.cancel_research();
+        // Whichever of the cancel and the worker gets there first is the only
+        // closer; a second `ToolEnd` would overwrite a finished result later.
+        let ends = tool_ends(&rx, 3);
+        assert_eq!(ends.len(), 1, "{ends:?}");
+        assert_eq!(ends[0].0, id);
+        assert!(ends[0].1.is_err());
+        // And a finished job cannot be "cancelled" after the fact.
+        coach.cancel_research();
+        assert!(tool_ends(&rx, 1).is_empty());
+    }
+
+    #[test]
+    fn research_body_has_no_line_limit_and_room_to_answer() {
+        assert!(!RESEARCH_PROMPT.contains("14 words"));
+        // Tied to the wire rather than asserted on the constant, which clippy
+        // rejects as an assertion on a constant.
+        assert_eq!(
+            body(&refused(), RESEARCH_PROMPT, "u", RESEARCH_MAX_TOKENS)["max_tokens"],
+            2_000
+        );
     }
 }
