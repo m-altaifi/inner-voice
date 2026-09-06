@@ -57,6 +57,69 @@ pub fn load(dir: &Path) -> Result<String> {
     Ok(out)
 }
 
+/// The folder as a value that knows when it last read itself.
+///
+/// On-disk is the source of truth (LEDGER Decision 9): editing a brief
+/// mid-call must reach the next advice. No watcher — `route()` sees every
+/// turn single-threaded and asks once per coach request, which is exactly
+/// the granularity that matters, and `newest` is a stat of a few dozen files.
+pub struct Corpus {
+    dir: std::path::PathBuf,
+    newest: Option<std::time::SystemTime>,
+    pub text: String,
+    files: usize,
+}
+
+impl Corpus {
+    pub fn load(dir: &Path) -> Result<Self> {
+        let text = load(dir)?;
+        Ok(Self {
+            dir: dir.to_path_buf(),
+            newest: newest(dir),
+            files: count(dir),
+            text,
+        })
+    }
+    /// Re-read if anything in the folder changed since the last read.
+    pub fn refresh(&mut self) -> Result<bool> {
+        let now = newest(&self.dir);
+        if now == self.newest {
+            return Ok(false);
+        }
+        // Recorded before the read, so a file that stays locked or half-written
+        // is reported once per change and not once per turn; finishing the save
+        // moves the mtime again and the next turn re-reads.
+        self.newest = now;
+        self.text = load(&self.dir)?;
+        self.files = count(&self.dir);
+        Ok(true)
+    }
+    pub fn files(&self) -> usize {
+        self.files
+    }
+}
+
+/// Latest mtime of the folder itself or any file in it. The folder's own
+/// mtime moves when a file is added or removed, which a per-file max misses.
+pub fn newest(dir: &Path) -> Option<std::time::SystemTime> {
+    let own = dir.metadata().and_then(|m| m.modified()).ok();
+    let files = std::fs::read_dir(dir)
+        .ok()?
+        .filter_map(|e| e.ok()?.metadata().ok()?.modified().ok())
+        .max();
+    own.max(files)
+}
+
+fn count(dir: &Path) -> usize {
+    std::fs::read_dir(dir)
+        .map(|d| {
+            d.filter_map(|e| e.ok().map(|e| e.path()))
+                .filter(|p| p.is_file() && crate::extract::supported(p))
+                .count()
+        })
+        .unwrap_or(0)
+}
+
 /// ~200 tokens. Whisper's prompt window is `n_text_ctx / 2`, about 224 tokens,
 /// and overrunning it drops the front of the glossary rather than erroring.
 const PROMPT_CHARS: usize = 800;
@@ -202,6 +265,27 @@ mod tests {
     #[test]
     fn missing_folder_is_not_an_error() {
         assert_eq!(load(Path::new("does-not-exist")).unwrap(), "");
+    }
+
+    #[test]
+    fn corpus_reloads_only_when_the_folder_changed() {
+        let dir = std::env::temp_dir().join(format!("iv_corpus_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("facts.md"), "Owner is Sarah").unwrap();
+        let mut corpus = Corpus::load(&dir).unwrap();
+        assert!(corpus.text.contains("Sarah"));
+        assert!(!corpus.refresh().unwrap(), "nothing changed");
+        std::thread::sleep(std::time::Duration::from_millis(1_100));
+        std::fs::write(dir.join("facts.md"), "Owner is Marcus").unwrap();
+        assert!(corpus.refresh().unwrap(), "an edit is noticed");
+        assert!(corpus.text.contains("Marcus") && !corpus.text.contains("Sarah"));
+        // Adding a file changes the directory's own mtime.
+        std::thread::sleep(std::time::Duration::from_millis(1_100));
+        std::fs::write(dir.join("more.md"), "Region is EMEA").unwrap();
+        assert!(corpus.refresh().unwrap());
+        assert_eq!(corpus.files(), 2);
+        assert!(corpus.text.contains("EMEA"));
     }
 
     #[test]

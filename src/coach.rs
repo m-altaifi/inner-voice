@@ -49,6 +49,10 @@ fn pooled_agent() -> ureq::Agent {
 
 pub struct Coach {
     tx: Sender<Msg>,
+    /// Shared with the advice worker, which reads it per job: the taught corpus
+    /// is re-read whenever the folder changes, and the next request must carry
+    /// the new text without restarting the worker or its pooled connection.
+    prompt: Arc<std::sync::RwLock<String>>,
     seq: Arc<AtomicU64>,
     jobs: Sender<(u64, String)>,
     pending: Receiver<(u64, String)>,
@@ -86,18 +90,21 @@ impl Coach {
     pub fn new(provider: Provider, prompt: String, tx: Sender<Msg>) -> Self {
         let (jobs, pending) = bounded::<(u64, String)>(1);
         let seq = Arc::new(AtomicU64::new(0));
+        let prompt = Arc::new(std::sync::RwLock::new(prompt));
         let (rx, live, output) = (pending.clone(), seq.clone(), tx.clone());
         let advice_provider = provider.clone();
+        let system = prompt.clone();
         std::thread::spawn(move || {
             let agent = pooled_agent();
             while let Ok((generation, transcript)) = rx.recv() {
                 if live.load(Ordering::SeqCst) != generation {
                     continue;
                 }
+                let current = system.read().unwrap_or_else(|e| e.into_inner()).clone();
                 if let Err(e) = stream(
                     &agent,
                     &advice_provider,
-                    &prompt,
+                    &current,
                     &transcript,
                     generation,
                     &live,
@@ -167,11 +174,26 @@ impl Coach {
         };
         Self {
             tx,
+            prompt,
             seq,
             jobs,
             pending,
             research,
         }
+    }
+
+    /// Swap the system prompt for every request after this one. The corpus
+    /// changed on disk; a changed prompt busts the provider's cache prefix
+    /// once, which is the point.
+    pub fn set_prompt(&self, prompt: String) {
+        *self.prompt.write().unwrap_or_else(|e| e.into_inner()) = prompt;
+    }
+    #[cfg(test)]
+    fn prompt(&self) -> String {
+        self.prompt
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
     }
 
     /// Fire and forget. The HUD renders whatever streams back, and drops
@@ -653,6 +675,14 @@ mod tests {
         // And a finished job cannot be "cancelled" after the fact.
         coach.cancel_research();
         assert!(tool_ends(&rx, 1).is_empty());
+    }
+
+    #[test]
+    fn a_new_prompt_is_what_the_next_request_carries() {
+        let (tx, _rx) = crossbeam_channel::unbounded();
+        let coach = Coach::new(refused(), "old".into(), tx);
+        coach.set_prompt("new".into());
+        assert_eq!(coach.prompt(), "new");
     }
 
     #[test]

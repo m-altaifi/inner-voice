@@ -227,7 +227,8 @@ impl Segmenter {
 pub struct Tune {
     pub epoch: Arc<AtomicU64>,
     /// Glossary primed into whisper's decoder — see `knowledge::glossary`.
-    pub prompt: String,
+    /// Behind a lock because the corpus can be re-read mid-call.
+    pub prompt: std::sync::RwLock<String>,
     /// Where to save every utterance for later listening, if asked.
     pub dump: Option<std::path::PathBuf>,
     /// Speaker-embedding model. `None` — including a missing file — simply means
@@ -301,7 +302,12 @@ fn warm(state: &mut WhisperState) {
 /// embedding, which is computed concurrently, and the turn cannot be stamped
 /// until both have landed.
 fn transcribe(state: &mut WhisperState, audio: &[f32], tune: &Tune) -> Result<String> {
-    state.full(params(&tune.prompt), audio)?;
+    let prompt = tune
+        .prompt
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone();
+    state.full(params(&prompt), audio)?;
     Ok(state
         .as_iter()
         .map(|s| s.to_string())

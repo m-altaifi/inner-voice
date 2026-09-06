@@ -449,6 +449,7 @@ impl State {
                         || text.starts_with("Preview")
                         || text.starts_with("hearing:")
                         || text.starts_with("speak:")
+                        || text.starts_with("knowledge")
                     {
                         self.notice = text.clone();
                     }

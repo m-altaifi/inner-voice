@@ -258,6 +258,21 @@ fn bind(names: &mut HashMap<usize, String>, voice: usize, name: &str) {
     names.insert(voice, name.to_string());
 }
 
+/// Persona plus the taught corpus, in the shape the coach pins behind its
+/// cache breakpoint. One place, because the same text is built at startup and
+/// again on every reload.
+fn build_prompt(persona: &str, corpus: &str) -> String {
+    if corpus.is_empty() {
+        return persona.to_string();
+    }
+    format!(
+        "{persona}\n\n# Source of truth\n\nThe following is what the user taught you \
+         before this call. Treat it as authoritative and prefer it over your own \
+         assumptions. If a fact is not here and not in the transcript, say so instead \
+         of inventing one.\n{corpus}"
+    )
+}
+
 /// Turns go to the panel either way; a finished THEM turn also asks Claude.
 ///
 /// The log is written here rather than in the capture workers because this is
@@ -267,6 +282,38 @@ struct ContextServices {
     agent: Option<agent::Agent>,
     references: references::References,
     research_prompt: String,
+    corpus: knowledge::Corpus,
+    persona: String,
+    tune: Arc<audio::Tune>,
+}
+
+/// Before anything goes to the coach: if the folder changed, the coach and
+/// whisper both learn it now, and the panel says so.
+fn refresh_corpus(
+    corpus: &mut knowledge::Corpus,
+    persona: &str,
+    coach: &Option<coach::Coach>,
+    tune: &audio::Tune,
+    tx: &Sender<Msg>,
+) {
+    match corpus.refresh() {
+        Ok(true) => {
+            if let Some(coach) = coach {
+                coach.set_prompt(build_prompt(persona, &corpus.text));
+            }
+            *tune.prompt.write().unwrap_or_else(|e| e.into_inner()) =
+                knowledge::glossary(&corpus.text);
+            let _ = tx.send(Msg::Sys(format!(
+                "knowledge reloaded: {} files, {} KB",
+                corpus.files(),
+                corpus.text.len() / 1024
+            )));
+        }
+        Ok(false) => {}
+        Err(e) => {
+            let _ = tx.send(Msg::Sys(format!("knowledge reload failed: {e:#}")));
+        }
+    }
 }
 
 fn route(
@@ -282,6 +329,9 @@ fn route(
         agent,
         references,
         research_prompt,
+        mut corpus,
+        persona,
+        tune,
     } = services;
     let mut history = history::History::default();
     let mut names: HashMap<usize, String> = HashMap::new();
@@ -301,6 +351,7 @@ fn route(
                 continue;
             }
             Msg::Question(question) => {
+                refresh_corpus(&mut corpus, &persona, &coach, &tune, &tx);
                 if let Some(coach) = &coach {
                     coach.ask(format!(
                         "{}\n\nUser question: {}{}",
@@ -317,6 +368,7 @@ fn route(
             // for the whole session and the two id spaces never interleave on
             // the panel's single research slot.
             Msg::Research => {
+                refresh_corpus(&mut corpus, &persona, &coach, &tune, &tx);
                 let transcript = history.render();
                 if let Some(agent) = &agent {
                     agent.ask(format!("{transcript}{}", references.retrieve(&transcript)));
@@ -409,6 +461,7 @@ fn route(
                 who: who.clone(),
                 text: text.clone(),
             });
+            refresh_corpus(&mut corpus, &persona, &coach, &tune, &tx);
             if let Some(coach) = &coach
                 && who.is_them()
                 && text.split_whitespace().count() >= min_words
@@ -522,7 +575,7 @@ fn main() -> Result<()> {
         "none" => None,
         name => Some(provider::resolve(name, args.model.as_deref())?),
     };
-    let mut prompt = if provider.is_some() {
+    let prompt = if provider.is_some() {
         std::fs::read_to_string(&args.prompt).with_context(|| format!("reading {}", args.prompt))?
     } else {
         String::new()
@@ -570,20 +623,16 @@ fn main() -> Result<()> {
         })
         .transpose()?;
 
-    // Taught corpus is pinned into the system prompt, never retrieved.
-    let corpus = knowledge::load(std::path::Path::new(&args.knowledge))?;
-    let corpus_note = if corpus.is_empty() {
+    // Taught corpus is pinned into the system prompt, never retrieved — and
+    // re-read on change, so on-disk stays the source of truth mid-call.
+    let corpus = knowledge::Corpus::load(std::path::Path::new(&args.knowledge))?;
+    let corpus_note = if corpus.text.is_empty() {
         "no knowledge/ corpus".to_string()
     } else {
-        prompt.push_str(
-            "\n\n# Source of truth\n\nThe following is what the user taught you \
-             before this call. Treat it as authoritative and prefer it over your \
-             own assumptions. If a fact is not here and not in the transcript, say \
-             so instead of inventing one.\n",
-        );
-        prompt.push_str(&corpus);
-        format!("knowledge: {} KB pinned", corpus.len() / 1024)
+        format!("knowledge: {} KB pinned", corpus.text.len() / 1024)
     };
+    let persona = prompt;
+    let prompt = build_prompt(&persona, &corpus.text);
 
     // Resolve to names here so a bad --mic fails before the model loads; the
     // capture threads reopen by name because COM handles are not `Send`.
@@ -615,7 +664,7 @@ fn main() -> Result<()> {
     };
 
     let tune = Arc::new(audio::Tune {
-        prompt: knowledge::glossary(&corpus),
+        prompt: std::sync::RwLock::new(knowledge::glossary(&corpus.text)),
         dump: args.dump.map(std::path::PathBuf::from),
         voices,
         epoch: Arc::new(std::sync::atomic::AtomicU64::new(0)),
@@ -664,6 +713,7 @@ fn main() -> Result<()> {
     {
         let (rx, tx) = (turn_rx, ui_tx.clone());
         let references = references.clone();
+        let tune = tune.clone();
         std::thread::spawn(move || {
             route(
                 rx,
@@ -676,6 +726,9 @@ fn main() -> Result<()> {
                     agent,
                     references,
                     research_prompt,
+                    corpus,
+                    persona,
+                    tune,
                 },
             )
         });
@@ -722,13 +775,18 @@ fn main() -> Result<()> {
     }
 
     let _ = ui_tx.send(Msg::Sys(corpus_note));
-    if !tune.prompt.is_empty() {
+    let glossary = tune
+        .prompt
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone();
+    if !glossary.is_empty() {
         // Worth surfacing: a glossary that came out empty looks identical to one
         // that worked, right up until a name comes back wrong.
         let _ = ui_tx.send(Msg::Sys(format!(
             "primed {} terms: {}",
-            tune.prompt.matches(", ").count() + 1,
-            tune.prompt.trim_start_matches("Glossary: ")
+            glossary.matches(", ").count() + 1,
+            glossary.trim_start_matches("Glossary: ")
         )));
     }
     if let Some(d) = &tune.dump {
