@@ -43,6 +43,8 @@ const BG: Color32 = Color32::from_rgb(0x17, 0x1b, 0x22);
 const FG: Color32 = Color32::from_rgb(0xe7, 0xed, 0xf3);
 const MUTED: Color32 = Color32::from_rgb(0xb0, 0xbb, 0xc8);
 const ACCENT: Color32 = Color32::from_rgb(0x7d, 0xc4, 0xff);
+const AMBER: Color32 = Color32::from_rgb(0xff, 0xb4, 0x54);
+const SOFT_GREEN: Color32 = Color32::from_rgb(0x9f, 0xd8, 0xa0);
 const ADVICE: usize = 101;
 const TRANSCRIPT: usize = 102;
 const REFERENCES: usize = 103;
@@ -260,32 +262,62 @@ fn hit_test(x: f32, y: f32, width: f32, height: f32, pinned: bool) -> Option<Gra
     Some(edge.map_or(Grab::Move, Grab::Resize))
 }
 
-/// Split advice into headed sections the panel can style.
+/// The four line tags `prompt.md` emits, and how the panel shows each.
 ///
-/// `prompt.md` emits lines tagged `ASK` / `SAY` / `NOTE` / `FIX`; the four
-/// literals are matched exactly, case-sensitively and only when followed by
-/// whitespace, so a sentence beginning "ASKING" is left alone. Change the tag
-/// vocabulary in one place and it silently renders as body text in the other.
-fn display_advice(text: &str) -> Vec<(Option<&'static str>, String)> {
+/// This table is the only place the tag vocabulary lives on the panel side:
+/// change it in one place and it silently renders as body text in the other.
+/// The literals are matched exactly, case-sensitively and only when followed
+/// by whitespace, so a sentence beginning "ASKING" is left alone.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Tag {
+    Ask,
+    Say,
+    Note,
+    Fix,
+}
+
+impl Tag {
+    const TABLE: [(Tag, &'static str, &'static str); 4] = [
+        (Tag::Ask, "ASK", "ASK NEXT"),
+        (Tag::Say, "SAY", "SUGGESTED WORDING"),
+        (Tag::Note, "NOTE", "KEEP IN MIND"),
+        (Tag::Fix, "FIX", "CLARIFY"),
+    ];
+    fn heading(self) -> &'static str {
+        Self::TABLE
+            .iter()
+            .find(|(tag, ..)| *tag == self)
+            .map_or("", |(_, _, heading)| *heading)
+    }
+    /// `(heading, body)` colours. Von Restorff: only `ASK` and `FIX` are
+    /// saturated, because colouring every line makes nothing stand out.
+    /// `NOTE` recedes entirely — it is the thing to hold, not the thing to do.
+    fn colours(self) -> (Color32, Color32) {
+        match self {
+            Tag::Ask => (ACCENT, FG),
+            Tag::Fix => (AMBER, FG),
+            Tag::Say => (SOFT_GREEN, FG),
+            Tag::Note => (MUTED, MUTED),
+        }
+    }
+}
+
+/// Split advice into tagged sections the panel can style.
+fn display_advice(text: &str) -> Vec<(Option<Tag>, String)> {
     text.lines()
         .map(|line| {
             let line = line.trim();
-            for (tag, title) in [
-                ("ASK", "ASK NEXT"),
-                ("SAY", "SUGGESTED WORDING"),
-                ("NOTE", "KEEP IN MIND"),
-                ("FIX", "CLARIFY"),
-            ] {
+            for (tag, literal, _) in Tag::TABLE {
                 if let Some(rest) = line
-                    .strip_prefix(tag)
+                    .strip_prefix(literal)
                     .filter(|s| s.starts_with(char::is_whitespace))
                 {
-                    return (Some(title), rest.trim().to_string());
+                    return (Some(tag), rest.trim().to_string());
                 }
             }
             (None, line.to_string())
         })
-        .filter(|(title, body)| title.is_some() || !body.is_empty())
+        .filter(|(tag, body)| tag.is_some() || !body.is_empty())
         .collect()
 }
 
@@ -555,6 +587,13 @@ impl State {
     fn conversation(&mut self, ui: &mut egui::Ui) {
         ScrollArea::vertical()
             .id_salt("conversation")
+            // A `ScrollArea` refuses to be under 64 px tall by default, which is
+            // taller than this strip is for the first two turns. It then
+            // overflowed its panel, the panel reported a rect starting *below*
+            // its own top edge, and the central panel painted its background
+            // over the only row there was. The strip's own height is the
+            // authority here, so let the scroll area be as short as the panel.
+            .min_scrolled_height(0.0)
             .stick_to_bottom(true)
             .auto_shrink([false, false])
             .show(ui, |ui| {
@@ -566,12 +605,19 @@ impl State {
                     );
                 }
                 for (who, text) in &self.transcript {
+                    // Miller: THEM brighter than YOU, because THEM is what you
+                    // react to. Your own words are context, not a prompt.
+                    let (label, body) = if who == "YOU" {
+                        (MUTED, MUTED)
+                    } else {
+                        (ACCENT, FG)
+                    };
                     ui.horizontal_top(|ui| {
                         ui.add_sized(
                             [72.0, ui.text_style_height(&TextStyle::Body)],
-                            egui::Label::new(RichText::new(who).color(ACCENT).monospace()),
+                            egui::Label::new(RichText::new(who).color(label).monospace()),
                         );
-                        ui.label(RichText::new(text).color(MUTED));
+                        ui.label(RichText::new(text).color(body));
                     });
                 }
             });
@@ -588,8 +634,9 @@ impl State {
             .show(ui, |ui| match self.view {
                 TRANSCRIPT => {
                     for (who, text) in &self.transcript {
-                        ui.label(RichText::new(who).color(ACCENT).monospace());
-                        ui.label(RichText::new(text).color(FG));
+                        let (label, body) = if who == "YOU" { (MUTED, MUTED) } else { (ACCENT, FG) };
+                        ui.label(RichText::new(who).color(label).monospace());
+                        ui.label(RichText::new(text).color(body));
                         ui.add_space(8.0);
                     }
                 }
@@ -637,12 +684,20 @@ impl State {
                     ui.label(RichText::new("Ctrl+Shift+F11 lists every key.").color(MUTED));
                 }
                 _ => {
-                    for (heading, body) in display_advice(&self.advice) {
-                        if let Some(heading) = heading {
+                    // Never blank: the last turn's advice stays up while the
+                    // next one is prepared, greyed so the eye knows it is old.
+                    let stale = self.thinking;
+                    for (tag, body) in display_advice(&self.advice) {
+                        let (head, text) = match (tag, stale) {
+                            (_, true) => (MUTED, MUTED),
+                            (Some(tag), false) => tag.colours(),
+                            (None, false) => (FG, FG),
+                        };
+                        if let Some(tag) = tag {
                             ui.add_space(6.0);
-                            ui.label(RichText::new(heading).color(ACCENT).strong().size(13.0));
+                            ui.label(RichText::new(tag.heading()).color(head).strong().size(13.0));
                         }
-                        ui.label(RichText::new(body).color(FG).size(19.0));
+                        ui.label(RichText::new(body).color(text).size(19.0));
                     }
                 }
             });
@@ -1103,11 +1158,22 @@ mod tests {
         );
         assert_eq!(
             shown[0],
-            (Some("ASK NEXT"), "What is the rollback plan?".into())
+            (Some(Tag::Ask), "What is the rollback plan?".into())
         );
         // Only the exact tag followed by whitespace becomes a heading.
         assert_eq!(shown[1], (None, "ASKING is not a tag".into()));
-        assert_eq!(shown[2], (Some("KEEP IN MIND"), "Owner unclear".into()));
+        assert_eq!(shown[2], (Some(Tag::Note), "Owner unclear".into()));
+        assert_eq!(Tag::Ask.heading(), "ASK NEXT");
+        assert_eq!(Tag::Fix.heading(), "CLARIFY");
+    }
+    #[test]
+    fn only_ask_and_fix_are_saturated() {
+        // Von Restorff: colour every line and nothing stands out.
+        assert_eq!(Tag::Ask.colours().0, ACCENT);
+        assert_eq!(Tag::Fix.colours().0, AMBER);
+        assert_eq!(Tag::Say.colours().0, SOFT_GREEN);
+        assert_eq!(Tag::Note.colours(), (MUTED, MUTED));
+        assert_ne!(Tag::Say.colours().0, ACCENT);
     }
     #[test]
     fn every_action_is_reachable_by_exactly_one_key() {
