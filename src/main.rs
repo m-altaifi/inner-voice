@@ -15,6 +15,7 @@ mod log;
 mod process;
 mod provider;
 mod references;
+mod people;
 mod roster;
 mod search;
 mod setup;
@@ -25,7 +26,7 @@ use anyhow::{Context, Result};
 use clap::Parser;
 use crossbeam_channel::{Receiver, Sender, unbounded};
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::sync::atomic::AtomicBool;
 use wasapi::{Device, DeviceEnumerator, Direction, initialize_mta};
 use whisper_rs::{WhisperContext, WhisperContextParameters};
@@ -173,6 +174,12 @@ struct Args {
     )]
     voices: String,
 
+    /// Where the voices you have named are remembered between calls. Empty
+    /// turns it off: the far end is then only ever named within one call, and
+    /// nothing about anybody's voice is written to disk.
+    #[arg(long, env = "IV_PEOPLE", default_value = "people.json")]
+    people: String,
+
     /// Ignore THEM turns shorter than this many words
     #[arg(long, env = "IV_MIN_WORDS", default_value_t = 3)]
     min_words: usize,
@@ -315,6 +322,9 @@ struct ContextServices {
     corpus: knowledge::Corpus,
     persona: String,
     tune: Arc<audio::Tune>,
+    /// Shared with the THEM whisper worker, which owns the embeddings while
+    /// this thread owns the names. See `people`.
+    book: Arc<Mutex<people::Book>>,
 }
 
 /// Before anything goes to the coach: if the folder changed, the coach and
@@ -377,12 +387,22 @@ fn route(
         mut corpus,
         persona,
         tune,
+        book,
     } = services;
     let mut history = history::History::default();
-    let mut names: HashMap<usize, String> = HashMap::new();
+    // Seeded, not empty: everyone ever named is already a cluster in the book,
+    // at the same index `voiceid` will hand back, so someone recognised from a
+    // call last month is named on their first word rather than having to
+    // introduce themselves again.
+    let mut names: HashMap<usize, String> = book
+        .lock()
+        .map(|b| b.named().into_iter().collect())
+        .unwrap_or_default();
     // A name spoken in the previous turn, waiting to see who answers to it.
     let mut called: Option<String> = None;
     let mut last_them = String::new();
+    // Which far-end voice spoke last, so `/who` has something to attach to.
+    let mut last_voice: Option<usize> = None;
     let mut advice = (0, String::new());
     // Whether a far-end turn asks the coach on its own. Off is the all-day
     // shape: an assistant left running through a working day would otherwise
@@ -422,6 +442,42 @@ fn route(
                 // has not started yet.
                 if let Some(spec) = question.strip_prefix("/hear") {
                     set_hearing(&tune, &tx, spec.trim());
+                    continue;
+                }
+                // The manual path into the book. Voices are named by what is
+                // said, which needs someone to actually say a name — plenty of
+                // calls never do, and on those this is the only way the far end
+                // is ever anything but THEM.
+                if let Some(name) = question.strip_prefix("/who") {
+                    match (last_voice, name.trim()) {
+                        (_, "") => {
+                            let _ = tx.send(Msg::Sys(format!(
+                                "naming: {}",
+                                match names.is_empty() {
+                                    true => "nobody yet — /who <name> names whoever spoke last"
+                                        .to_string(),
+                                    false => {
+                                        let mut all: Vec<&String> = names.values().collect();
+                                        all.sort();
+                                        all.iter()
+                                            .map(|s| s.as_str())
+                                            .collect::<Vec<_>>()
+                                            .join(", ")
+                                    }
+                                }
+                            )));
+                        }
+                        (Some(v), name) => {
+                            bind(&mut names, v, name);
+                            remember(&book, &tx, &names, v);
+                        }
+                        (None, _) => {
+                            let _ = tx.send(Msg::Sys(
+                                "naming: nobody has spoken yet — /who names the last far-end voice"
+                                    .into(),
+                            ));
+                        }
+                    }
                     continue;
                 }
                 refresh_corpus(&mut corpus, &mut roster, &persona, &coach, &tune, &tx);
@@ -509,16 +565,22 @@ fn route(
             if let Who::Them { voice, name } = who
                 && let Some(v) = *voice
             {
-                // A voice naming itself is the strongest evidence there is.
-                // Someone answering to a name called a moment ago is weaker,
-                // so it only fills a blank and never overrules an intro.
+                last_voice = Some(v);
+                // Strongest first. A roster intro beats a free one because the
+                // spelling comes off a list a human wrote rather than out of
+                // whisper; a free intro beats being addressed because the
+                // speaker is talking about themselves. Being addressed only
+                // ever fills a blank, and never overrules either.
                 if let Some(n) = roster.self_intro(text) {
                     bind(&mut names, v, n);
+                } else if let Some(n) = roster::introduced(text) {
+                    bind(&mut names, v, &n);
                 } else if let Some(n) = called.as_deref()
                     && !names.contains_key(&v)
                 {
                     bind(&mut names, v, n);
                 }
+                remember(&book, &tx, &names, v);
                 *name = names.get(&v).cloned();
             }
             // Either side can address someone, which is exactly why this lives
@@ -547,6 +609,35 @@ fn route(
             return;
         }
     }
+}
+
+/// Write a binding through to the book, and say so once.
+///
+/// Kept out of `bind` so the conflict rule stays a pure function with its own
+/// test. Only ever *adds*: `bind` clears both voices when two claim one name,
+/// which is the right answer for the call in front of you and the wrong one for
+/// a record — a single confusing meeting must not delete someone the book has
+/// been right about for a year.
+fn remember(
+    book: &Arc<Mutex<people::Book>>,
+    tx: &Sender<Msg>,
+    names: &HashMap<usize, String>,
+    voice: usize,
+) {
+    let Some(name) = names.get(&voice) else {
+        return;
+    };
+    let Ok(mut book) = book.lock() else {
+        return;
+    };
+    if !book.name_it(voice, name) {
+        return;
+    }
+    let _ = tx.send(match book.save() {
+        Ok(()) => Msg::Sys(format!("naming: {name}")),
+        // Named for this call either way — the failure is the memory of it.
+        Err(e) => Msg::Sys(format!("naming: {name}, but saving failed: {e:#}")),
+    });
 }
 
 fn record(log: &Option<log::Log>, tx: &Sender<Msg>, who: &str, text: &str) {
@@ -710,6 +801,7 @@ fn main() -> Result<()> {
                 mic: args.mic.clone(),
                 loopback: args.loopback.clone(),
                 knowledge: args.knowledge.clone(),
+                people: args.people.clone(),
                 references: args.references.clone(),
                 agent_cmd: args.agent_cmd.as_ref().map(|p| p.display().to_string()),
                 voice: args.voice.clone(),
@@ -805,16 +897,35 @@ fn main() -> Result<()> {
     // than staying mysteriously anonymous all call.
     let voices = Some(std::path::PathBuf::from(&args.voices)).filter(|p| p.exists());
     let roster = roster::Roster::load(std::path::Path::new(&args.knowledge));
+    // Everyone named on an earlier call. Loaded before the model so a broken
+    // book is a startup problem, not a mid-call one.
+    let book = Arc::new(Mutex::new(people::Book::load(
+        Some(std::path::PathBuf::from(&args.people)).filter(|p| !p.as_os_str().is_empty()),
+    )));
     // The notice names the roster rather than saying "on". Whisper is primed
     // with these names (`knowledge::glossary`), so it will occasionally *hear*
     // one in garbled audio and `route` will bind it to the far-end voice — and
     // an unexplained name in the transcript is exactly the kind of thing a user
     // cannot debug from the outside. Naming them at startup makes the source
     // obvious the moment it happens.
-    let names_note = match (&voices, roster.is_empty()) {
-        (Some(_), false) => format!("naming: {}", roster.names().join(", ")),
-        (Some(_), true) => "naming: no attendees.csv, far end stays THEM".to_string(),
-        (None, _) => format!("naming: no {}, far end stays THEM", args.voices),
+    let remembered: Vec<String> = book
+        .lock()
+        .map(|b| b.named().into_iter().map(|(_, n)| n).collect())
+        .unwrap_or_default();
+    let names_note = match (&voices, roster.names(), remembered.as_slice()) {
+        // No embedding model is the only real "off": with it, an unlisted
+        // stranger can still introduce themselves or be named with `/who`.
+        (None, _, _) => format!("naming: no {}, far end stays THEM", args.voices),
+        (Some(_), [], []) => "naming: on, nobody known yet — /who names a voice".to_string(),
+        (Some(_), listed, known) => format!(
+            "naming: {}",
+            listed
+                .iter()
+                .chain(known.iter())
+                .cloned()
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
     };
 
     let tune = Arc::new(audio::Tune {
@@ -829,6 +940,7 @@ fn main() -> Result<()> {
                 .unwrap_or_default(),
         ),
         hear_gen: std::sync::atomic::AtomicU64::new(0),
+        book: book.clone(),
     });
 
     let (turn_tx, turn_rx) = unbounded();
@@ -894,6 +1006,7 @@ fn main() -> Result<()> {
                     corpus,
                     persona,
                     tune,
+                    book,
                 },
             )
         });
@@ -999,6 +1112,7 @@ mod tests {
             epoch: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             hear: std::sync::RwLock::new(apps.iter().map(|s| s.to_string()).collect()),
             hear_gen: std::sync::atomic::AtomicU64::new(0),
+            book: Arc::new(Mutex::new(people::Book::load(None))),
         })
     }
     fn hear(tune: &Arc<audio::Tune>, spec: &str) -> (Vec<String>, u64, String) {
@@ -1055,5 +1169,51 @@ mod tests {
         let mut names = HashMap::from([(1, "Sarah".into()), (2, "Marcus".into())]);
         bind(&mut names, 2, "Sarah");
         assert!(names.is_empty());
+    }
+
+    /// The write half of the voice book. `people.rs` proves the file round
+    /// trips and `--setup` shows a book loading; this is the step between —
+    /// that a name bound during a call actually reaches the file, which no
+    /// test with real audio in it could run here.
+    #[test]
+    fn a_name_bound_during_a_call_is_written_to_the_book() {
+        let path =
+            std::env::temp_dir().join(format!("iv_remember_{}.json", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let book = Arc::new(Mutex::new(people::Book::load(Some(path.clone()))));
+        // Two voices this call has heard and not yet named.
+        book.lock().unwrap().people.extend([
+            people::Person { name: None, centroid: vec![1.0, 0.0], turns: 1 },
+            people::Person { name: None, centroid: vec![0.0, 1.0], turns: 1 },
+        ]);
+        let (tx, rx) = unbounded();
+
+        let mut names = HashMap::new();
+        bind(&mut names, 0, "Ada Lovelace");
+        remember(&book, &tx, &names, 0);
+
+        assert_eq!(
+            people::Book::load(Some(path.clone())).named(),
+            vec![(0, "Ada Lovelace".to_string())]
+        );
+        assert!(
+            matches!(rx.try_recv(), Ok(Msg::Sys(s)) if s == "naming: Ada Lovelace"),
+            "a name that was written down must say so"
+        );
+        // Same name again: nothing to write, so nothing to announce.
+        remember(&book, &tx, &names, 0);
+        assert!(rx.try_recv().is_err());
+
+        // A conflict clears the *call's* binding — but a confusing meeting must
+        // not delete somebody the book has been right about for a year.
+        bind(&mut names, 1, "Ada Lovelace");
+        assert!(names.is_empty(), "both claims dropped for this call");
+        remember(&book, &tx, &names, 1);
+        assert_eq!(
+            people::Book::load(Some(path.clone())).named(),
+            vec![(0, "Ada Lovelace".to_string())],
+            "the record survives the conflict"
+        );
+        let _ = std::fs::remove_file(&path);
     }
 }

@@ -372,11 +372,28 @@ Optional far-end speaker identification:
 curl.exe -fL -o models/campplus_sv_en_voxceleb_16k.onnx https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/3dspeaker_speech_campplus_sv_en_voxceleb_16k.onnx
 ```
 
-Names come from `knowledge/attendees.csv` and introductions/direct address.
-Uncertain matches stay `THEM`. The startup notice reads `naming: <the roster>`,
-so a name appearing mid-call is always traceable to a file you put there — it
-used to say only `naming: on`. No `attendees.csv` means the far end stays
-`THEM`, which is the right answer for an unbriefed call. Thresholds (0.70/0.50) remain unvalidated on real
+Names come from three places, in falling order of evidence: `attendees.csv`
+(the spelling comes off the list, not out of Whisper), a stranger introducing
+themselves ("I'm Ahmed", "Ahmed here"), and being addressed by a name already
+on the roster. Uncertain matches stay `THEM`. The startup notice reads
+`naming: <who it can name>`, so a name appearing mid-call is always traceable.
+
+**Voices you name are remembered.** `people.json` (`--people`, `IV_PEOPLE`)
+holds a speaker embedding and a name for everyone the far end has ever been
+named as, and the next call recognises them on their first word without anyone
+saying a name again. A fixed `attendees.csv` only ever worked for a standing
+meeting; this works when it is different people every time, which is the normal
+case. Only named voices are stored — an anonymous cluster cannot be recognised
+again, so keeping it would grow the file with rows that never match.
+
+`/who <name>` names whoever spoke last and is the path that matters in
+practice: plenty of calls never say a name out loud. Bare `/who` reports who
+the panel can currently put a name to, and `--setup` lists the whole book.
+`--people ''` turns it off, and then nothing about anybody's voice is written
+to disk.
+
+The file holds voice data. It is git-ignored, it never leaves the machine, and
+deleting it is a complete reset. Thresholds (0.70/0.50) remain unvalidated on real
 calls; collect `--dump clips` audio before tuning them.
 
 Coaching sends transcript and knowledge to the provider. Audio stays local.

@@ -8,10 +8,20 @@
 //!
 //! `None` is a first-class answer here — "never guess, a wrong name is worse
 //! than no name" is the product rule, and the caller shows THEM for it.
+//!
+//! The clusters live in `people::Book`, which starts the call holding everyone
+//! ever named rather than empty. Matching is otherwise unchanged: a known
+//! person is simply a cluster that already has a centroid and a name, so
+//! recognising someone from last week and recognising them from earlier in this
+//! call are the same code path — which is why the book is not a second lookup
+//! bolted on beside this one.
 
 use anyhow::{Context, Result};
 use ort::session::Session;
 use std::path::Path;
+use std::sync::{Arc, Mutex};
+
+use crate::people::{Book, Person};
 
 /// ponytail: PROVISIONAL, NOT VALIDATED. Must be tuned on real call audio
 /// captured with `--dump`. The only measurement so far is two Microsoft TTS
@@ -29,32 +39,38 @@ const SAME: f32 = 0.70;
 /// Below this, nothing heard so far is a plausible match — a new voice.
 const NEW: f32 = 0.50;
 
-/// Whole conference calls exist, but eight distinct voices on one far-end
-/// stream means the clustering has already failed. At the cap we answer `None`
-/// rather than evict: a recycled slot silently renames someone.
-const MAX_VOICES: usize = 8;
+/// Whole conference calls exist, but eight *new* voices on one far-end stream
+/// means the clustering has already failed. At the cap we answer `None` rather
+/// than evict: a recycled slot silently renames someone.
+///
+/// Counted per call, not per book. Eight strangers in one meeting is a fault;
+/// eight hundred people across a year of calls is just a year, and capping the
+/// book itself would stop recognising the ninth person you ever met.
+const MAX_NEW: usize = 8;
 
 /// Under ~1.5 s the embedding is dominated by whatever phonemes happened to be
 /// in the clip, not by the speaker. Cheaper and safer to refuse than to run it.
 const MIN_SAMPLES: usize = crate::audio::RATE * 3 / 2;
 
-/// A learned voice: unit-length centroid, and how many utterances built it.
-type Voice = (Vec<f32>, u32);
-
 pub struct VoiceId {
     session: Session,
-    voices: Vec<Voice>,
+    /// Shared with `route`, which owns the names. See `people`.
+    book: Arc<Mutex<Book>>,
+    /// `people.len()` when the call started, plus `MAX_NEW`.
+    cap: usize,
 }
 
 impl VoiceId {
-    pub fn new(model: &Path) -> Result<Self> {
+    pub fn new(model: &Path, book: Arc<Mutex<Book>>) -> Result<Self> {
+        let cap = book.lock().map(|b| b.people.len()).unwrap_or(0) + MAX_NEW;
         Ok(Self {
             // No execution provider: 54 ms on CPU per utterance, against turns
             // that arrive seconds apart, and the GPU is busy with whisper.
             session: Session::builder()?
                 .commit_from_file(model)
                 .with_context(|| format!("loading {}", model.display()))?,
-            voices: Vec::new(),
+            book,
+            cap,
         })
     }
 
@@ -68,7 +84,11 @@ impl VoiceId {
         // — both mean "show THEM" — so it collapses into the same answer
         // rather than growing an error path nobody can act on mid-call.
         let emb = self.embed(audio).ok()?;
-        assign(&mut self.voices, &emb)
+        let cap = self.cap;
+        // A poisoned lock means the naming thread panicked. The call is worth
+        // more than the attribution, so this degrades to anonymous turns.
+        let mut book = self.book.lock().ok()?;
+        assign(&mut book.people, &emb, cap)
     }
 
     /// One utterance -> one unit-length embedding.
@@ -115,7 +135,7 @@ fn cos(a: &[f32], b: &[f32]) -> f32 {
 /// Two thresholds, not one: a single cutoff has to call every borderline case
 /// either a match or a new speaker, and both mistakes are visible on the panel.
 /// The band between them is where honest uncertainty lives.
-fn assign(voices: &mut Vec<Voice>, emb: &[f32]) -> Option<usize> {
+fn assign(voices: &mut Vec<Person>, emb: &[f32], cap: usize) -> Option<usize> {
     // Must be a unit vector. A zero or NaN one scores 0 against everybody,
     // which reads as "a new speaker" and plants a cluster that then matches
     // nothing for the rest of the call.
@@ -125,27 +145,37 @@ fn assign(voices: &mut Vec<Voice>, emb: &[f32]) -> Option<usize> {
     let best = voices
         .iter()
         .enumerate()
-        .map(|(i, (c, _))| (i, cos(c, emb)))
+        // A stored centroid of the wrong width came from another model. `cos`
+        // zips, so scoring it would silently compare a prefix, and a prefix can
+        // clear 0.70 and hand this voice someone else's name.
+        .filter(|(_, p)| p.centroid.len() == emb.len())
+        .map(|(i, p)| (i, cos(&p.centroid, emb)))
         .max_by(|a, b| a.1.total_cmp(&b.1));
 
     match best {
         Some((i, s)) if s >= SAME => {
-            let (c, n) = &mut voices[i];
-            *n += 1;
+            let p = &mut voices[i];
+            p.turns += 1;
             // Running mean, then back onto the unit sphere so `cos` stays a
             // dot product. Drifts with the speaker (headset moved, voice
-            // tiring) without keeping every embedding of the call around.
-            for (a, b) in c.iter_mut().zip(emb) {
-                *a += (b - *a) / *n as f32;
+            // tiring) without keeping every embedding of the call around — and
+            // now across calls too, so a voice first heard on a bad headset is
+            // not frozen at it forever.
+            for (a, b) in p.centroid.iter_mut().zip(emb) {
+                *a += (b - *a) / p.turns as f32;
             }
-            unit(c)?;
+            unit(&mut p.centroid)?;
             Some(i)
         }
         // Close to someone, but not close enough to say so.
         Some((_, s)) if s >= NEW => None,
-        _ if voices.len() >= MAX_VOICES => None,
+        _ if voices.len() >= cap => None,
         _ => {
-            voices.push((emb.to_vec(), 1));
+            voices.push(Person {
+                name: None,
+                centroid: emb.to_vec(),
+                turns: 1,
+            });
             Some(voices.len() - 1)
         }
     }
@@ -172,61 +202,141 @@ mod tests {
         tilted(axis, 0.0)
     }
 
+    /// The book a call starts with. `cap` is per call, so tests that push the
+    /// limit pass `n + MAX_NEW` exactly as `VoiceId::new` does.
+    fn known(names: &[(&str, usize)]) -> Vec<Person> {
+        names
+            .iter()
+            .map(|(n, axis)| Person {
+                name: Some(n.to_string()),
+                centroid: basis(*axis),
+                turns: 1,
+            })
+            .collect()
+    }
+
+    fn cap(voices: &[Person]) -> usize {
+        voices.len() + MAX_NEW
+    }
+
     #[test]
     fn identical_voice_reuses_its_cluster() {
         let mut v = Vec::new();
         let a = basis(0);
-        assert_eq!(assign(&mut v, &a), Some(0));
-        assert_eq!(assign(&mut v, &a), Some(0));
+        assert_eq!(assign(&mut v, &a, MAX_NEW), Some(0));
+        assert_eq!(assign(&mut v, &a, MAX_NEW), Some(0));
         assert_eq!(v.len(), 1, "one voice, one cluster");
-        assert_eq!(v[0].1, 2, "centroid absorbed both utterances");
+        assert_eq!(v[0].turns, 2, "centroid absorbed both utterances");
+        assert_eq!(v[0].name, None, "clustering does not invent names");
+    }
+
+    /// The whole point of the book: someone named on an earlier call is
+    /// recognised on this one without saying their name again.
+    #[test]
+    fn a_voice_from_a_previous_call_keeps_its_name() {
+        let mut v = known(&[("Ada Lovelace", 0), ("Grace Hopper", 1)]);
+        let room = cap(&v);
+        assert_eq!(assign(&mut v, &basis(1), room), Some(1));
+        assert_eq!(v[1].name.as_deref(), Some("Grace Hopper"));
+        assert_eq!(v[1].turns, 2, "and goes on learning the voice");
+        assert_eq!(v.len(), 2, "a known voice is not a new cluster");
+    }
+
+    /// A stranger on a call with people already in the book is still a
+    /// stranger — the book must not stretch to claim them.
+    #[test]
+    fn a_stranger_beside_known_voices_is_new_and_nameless() {
+        let mut v = known(&[("Ada Lovelace", 0)]);
+        let room = cap(&v);
+        assert_eq!(assign(&mut v, &basis(2), room), Some(1));
+        assert_eq!(v[1].name, None);
+        // And the unsure band still applies against a *stored* voice, which is
+        // the case that would put last week's name on today's stranger.
+        let mut v = known(&[("Ada Lovelace", 0)]);
+        let room = cap(&v);
+        assert_eq!(assign(&mut v, &tilted(1, 0.60), room), None);
+        assert_eq!(v.len(), 1, "an unsure turn must not invent a speaker");
+    }
+
+    /// A book written by a different embedding model would otherwise be scored
+    /// on its first 16 dimensions, and a prefix can clear 0.70.
+    #[test]
+    fn a_centroid_of_the_wrong_width_is_never_matched() {
+        let mut v = vec![Person {
+            name: Some("From another model".into()),
+            centroid: vec![1.0; DIM * 2],
+            turns: 9,
+        }];
+        let room = cap(&v);
+        assert_eq!(assign(&mut v, &basis(0), room), Some(1));
+        assert_eq!(v[1].name, None, "scored a prefix and adopted the name");
     }
 
     #[test]
     fn a_different_voice_gets_a_new_cluster() {
         let mut v = Vec::new();
-        assert_eq!(assign(&mut v, &basis(0)), Some(0));
-        assert_eq!(assign(&mut v, &basis(1)), Some(1));
+        assert_eq!(assign(&mut v, &basis(0), MAX_NEW), Some(0));
+        assert_eq!(assign(&mut v, &basis(1), MAX_NEW), Some(1));
     }
 
     #[test]
     fn the_band_between_the_thresholds_is_unsure() {
         let mut v = Vec::new();
-        assign(&mut v, &basis(0));
+        assign(&mut v, &basis(0), MAX_NEW);
         // 0.60: too far to be them, too close to be someone else.
-        assert_eq!(assign(&mut v, &tilted(1, 0.60)), None);
+        assert_eq!(assign(&mut v, &tilted(1, 0.60), MAX_NEW), None);
         assert_eq!(v.len(), 1, "an unsure turn must not invent a speaker");
-        assert_eq!(v[0].1, 1, "nor pollute the centroid it nearly matched");
+        assert_eq!(v[0].turns, 1, "nor pollute the centroid it nearly matched");
     }
 
     #[test]
     fn the_thresholds_are_inclusive_at_the_edges() {
         let mut v = Vec::new();
-        assign(&mut v, &basis(0));
-        assert_eq!(assign(&mut v, &tilted(1, SAME)), Some(0));
+        assign(&mut v, &basis(0), MAX_NEW);
+        assert_eq!(assign(&mut v, &tilted(1, SAME), MAX_NEW), Some(0));
         let mut v = Vec::new();
-        assign(&mut v, &basis(0));
-        assert_eq!(assign(&mut v, &tilted(1, NEW)), None);
+        assign(&mut v, &basis(0), MAX_NEW);
+        assert_eq!(assign(&mut v, &tilted(1, NEW), MAX_NEW), None);
     }
 
     #[test]
     fn the_cap_refuses_rather_than_evicts() {
         let mut v = Vec::new();
-        for i in 0..MAX_VOICES {
-            assert_eq!(assign(&mut v, &basis(i)), Some(i));
+        for i in 0..MAX_NEW {
+            assert_eq!(assign(&mut v, &basis(i), MAX_NEW), Some(i));
         }
-        assert_eq!(assign(&mut v, &basis(MAX_VOICES)), None);
-        assert_eq!(v.len(), MAX_VOICES, "nobody was renamed to make room");
+        assert_eq!(assign(&mut v, &basis(MAX_NEW), MAX_NEW), None);
+        assert_eq!(v.len(), MAX_NEW, "nobody was renamed to make room");
         // The voices already known still resolve.
-        assert_eq!(assign(&mut v, &basis(0)), Some(0));
+        assert_eq!(assign(&mut v, &basis(0), MAX_NEW), Some(0));
+    }
+
+    /// The cap counts this call's strangers, not the address book. A book of
+    /// eight would otherwise refuse to hear a ninth person ever again.
+    #[test]
+    fn a_full_book_does_not_use_up_this_calls_budget() {
+        let mut v = known(&[
+            ("A", 0),
+            ("B", 1),
+            ("C", 2),
+            ("D", 3),
+            ("E", 4),
+            ("F", 5),
+            ("G", 6),
+            ("H", 7),
+        ]);
+        let room = cap(&v);
+        assert_eq!(v.len(), MAX_NEW, "the book alone is already at the old cap");
+        assert_eq!(assign(&mut v, &basis(8), room), Some(8));
+        assert_eq!(v[8].name, None);
     }
 
     #[test]
     fn a_dead_embedding_is_unsure_not_a_nan_cluster() {
         let mut v = Vec::new();
-        assert_eq!(assign(&mut v, &basis(0)), Some(0));
+        assert_eq!(assign(&mut v, &basis(0), MAX_NEW), Some(0));
         // All-zero would divide by zero in the centroid update.
-        assert_eq!(assign(&mut v, &[0f32; DIM]), None);
+        assert_eq!(assign(&mut v, &[0f32; DIM], MAX_NEW), None);
     }
 
     fn wav(path: &str) -> Option<Vec<f32>> {
@@ -255,7 +365,8 @@ mod tests {
         }
         let jfk = wav(WAV).expect("open jfk.wav");
         let (a, b) = jfk.split_at(jfk.len() / 2);
-        let mut v = VoiceId::new(Path::new(MODEL)).expect("load model");
+        let book = Arc::new(Mutex::new(Book::load(None)));
+        let mut v = VoiceId::new(Path::new(MODEL), book).expect("load model");
 
         assert_eq!(v.identify(&a[..8_000]), None, "0.5 s is too short to judge");
 

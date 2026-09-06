@@ -86,10 +86,6 @@ impl Roster {
         r
     }
 
-    pub fn is_empty(&self) -> bool {
-        self.names.is_empty()
-    }
-
     /// Who the panel is prepared to call the far end, for the startup notice.
     ///
     /// `naming: on` used to be the whole message, which made a name arriving
@@ -158,6 +154,115 @@ impl Roster {
     }
 }
 
+/// Cues this module will accept from a *stranger*, as word sequences.
+///
+/// A deliberate subset of `INTRO_BEFORE`. The roster path can afford "it's",
+/// because whatever follows still has to be a name someone wrote down; with no
+/// list to check against, "it's Tuesday" and "it's Chrome" would both enrol a
+/// person. What is left is the phrasing that is only ever followed by a name.
+const OPENERS: &[&[&str]] = &[
+    &["i'm"],
+    &["im"],
+    &["i", "am"],
+    &["this", "is"],
+    &["my", "name", "is"],
+    &["my", "name's"],
+];
+
+/// Capitalised words that open sentences, answer questions, or name days — the
+/// false positives an unlisted name has no roster to be checked against.
+/// Everything here would otherwise be enrolled as a person by "I'm Sorry" or
+/// "This is Great".
+const NOT_A_NAME: &[&str] = &[
+    "a", "and", "but", "so", "the", "then", "there", "this", "that", "these", "those", "here",
+    "just", "not", "no", "yes", "yeah", "yep", "nope", "ok", "okay", "right", "sure", "sorry",
+    "good", "great", "fine", "well", "hi", "hello", "hey", "thanks", "thank", "please", "we",
+    "you", "i", "he", "she", "it", "they", "my", "your", "our", "his", "her", "their", "monday",
+    "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday", "january", "february",
+    "march", "april", "may", "june", "july", "august", "september", "october", "november",
+    "december", "today", "tomorrow", "yesterday", "morning", "afternoon", "evening", "everyone",
+    "everybody", "all", "both", "one", "two", "actually", "basically", "still", "about",
+];
+
+/// A name someone spoke about themselves, whether or not anybody listed it.
+///
+/// This is what makes the far end nameable when it is different people every
+/// time, which is the normal case — `attendees.csv` only ever worked for a
+/// standing meeting. It is deliberately the *weakest-evidence* path in this
+/// module and the narrowest: a self-introduction only, never being addressed.
+/// "Ahmed, can you take this?" is far more common in a call than "I'm Ahmed",
+/// and is exactly the sentence that would enrol a person who is not on the call
+/// at all. `Roster::addressed` still handles that case, because there a name
+/// has to appear on a list a human wrote.
+///
+/// Capitalisation is the only signal separating "I'm Ahmed" from "I'm sorry",
+/// so it is required — and taken from the original text, never from `lower`.
+///
+/// ponytail: word-sequence scan over `split_whitespace`, no byte offsets. The
+/// existing `hits` path indexes into the lowercased string, which is safe only
+/// because those offsets never touch the original; capitalisation has to read
+/// the original, so this walks words instead of risking the two drifting.
+pub fn introduced(text: &str) -> Option<String> {
+    let words: Vec<&str> = text.split_whitespace().collect();
+    let low: Vec<String> = words.iter().map(|w| bare(w).to_lowercase()).collect();
+
+    for (i, _) in words.iter().enumerate() {
+        // "Ahmed here", "Ahmed speaking" — the mirror image, and as safe as the
+        // openers because the cue follows rather than precedes the name.
+        if i > 0 && INTRO_AFTER.contains(&low[i].as_str())
+            && let Some(name) = name_at(&words, &low, i.saturating_sub(1))
+        {
+            return Some(name);
+        }
+        for opener in OPENERS {
+            // Not `starts_with`: `low` is `Vec<String>` and the openers are
+            // `&[&str]`, which are different enough types to need the compare
+            // spelled out rather than an allocation per word per cue.
+            if i + opener.len() <= low.len()
+                && opener.iter().zip(&low[i..]).all(|(a, b)| *a == b.as_str())
+                && let Some(name) = name_at(&words, &low, i + opener.len())
+            {
+                return Some(name);
+            }
+        }
+    }
+    None
+}
+
+/// One or two capitalised words at `at`, as a name. Two only when both look
+/// like one: "I'm Ada Lovelace" is a full name, "I'm Ada and this is" is not.
+fn name_at(words: &[&str], low: &[String], at: usize) -> Option<String> {
+    let one = |i: usize| -> Option<&str> {
+        let word = bare(words.get(i)?);
+        // A possessive is about somebody else: "I'm Ahmed's manager" names the
+        // manager, not Ahmed, and "this is Monday's number" names nobody. The
+        // roster path guards the same case with `possessive`; here the name is
+        // not on a list, so the apostrophe is the only warning there is.
+        if word.to_lowercase().ends_with("'s") {
+            return None;
+        }
+        let capitalised = word.chars().next()?.is_uppercase();
+        // Interior hyphens and apostrophes are part of the name -- Anne-Marie,
+        // O'Brien. `bare` has already taken any off the ends, so what is left
+        // cannot be punctuation pretending to be a word.
+        let plausible = word.chars().count() >= 2
+            && word.chars().all(|c| c.is_alphabetic() || "-'".contains(c))
+            && !NOT_A_NAME.contains(&low.get(i)?.as_str());
+        (capitalised && plausible).then_some(word)
+    };
+    let first = one(at)?;
+    Some(match one(at + 1) {
+        Some(second) => format!("{first} {second}"),
+        None => first.to_string(),
+    })
+}
+
+/// A word without the punctuation around it. Interior marks stay, so "name's"
+/// survives as a cue and "Anne-Marie" survives as a name.
+fn bare(word: &str) -> &str {
+    word.trim_matches(|c: char| !c.is_alphanumeric())
+}
+
 fn first_word(name: &str) -> String {
     name.split_whitespace().next().unwrap_or("").to_lowercase()
 }
@@ -195,6 +300,81 @@ fn cue_after(lower: &str, end: usize) -> bool {
 
 #[cfg(test)]
 mod tests {
+    /// `introduced` is the path that works with no list at all, so it has no
+    /// roster to check a name against — capitalisation and the cue are the only
+    /// evidence there is. These are the cases that decide whether the far end
+    /// gets named or gets libelled.
+    mod introduced {
+        use super::super::introduced;
+
+        #[test]
+        fn a_stranger_naming_themselves_is_learned() {
+            for (said, expected) in [
+                ("Hi, I'm Ahmed.", "Ahmed"),
+                ("I'm Ada Lovelace, platform lead", "Ada Lovelace"),
+                ("I am Grace", "Grace"),
+                ("this is Ahmed from the Kinshasa office", "Ahmed"),
+                ("My name is Ada", "Ada"),
+                ("my name's Grace Hopper", "Grace Hopper"),
+                ("Ahmed here", "Ahmed"),
+                ("Grace Hopper speaking", "Hopper"),
+            ] {
+                assert_eq!(introduced(said).as_deref(), Some(expected), "{said:?}");
+            }
+        }
+
+        /// The whole risk of naming without a list. Every one of these is a
+        /// sentence a real call contains, and each would enrol a person.
+        #[test]
+        fn ordinary_speech_is_never_a_name() {
+            for said in [
+                "I'm sorry, could you repeat that?",
+                "I'm not sure about the migration",
+                "I'm good thanks",
+                "This is great",
+                "this is the part I wanted to ask about",
+                "I am here",
+                "I'm Sorry",
+                "I'm ok",
+                "This is Monday's number",
+                "I'm Ahmed's manager",
+                "this is Ada's call",
+                "I'm A",
+                "it's Ahmed",
+                "so I'm on the call with the vendor",
+            ] {
+                assert_eq!(introduced(said), None, "{said:?}");
+            }
+        }
+
+        /// "it's" is the cue the roster path can afford and this one cannot:
+        /// with a list, whatever follows still has to be a name someone wrote
+        /// down; without one, "it's Chrome" enrols a browser.
+        #[test]
+        fn the_riskier_roster_cues_are_not_borrowed() {
+            assert_eq!(introduced("it's Tuesday"), None);
+            assert_eq!(introduced("It's Chrome again"), None);
+        }
+
+        /// Two words only when both look like a name. Whisper writes a stream
+        /// of clauses with no punctuation, so "I'm Ada and Grace is on mute"
+        /// must not become one person called "Ada And".
+        #[test]
+        fn a_second_word_joins_only_when_it_is_one() {
+            assert_eq!(introduced("I'm Ada and Grace is on mute").as_deref(), Some("Ada"));
+            assert_eq!(introduced("I'm Ada, the platform lead").as_deref(), Some("Ada"));
+            assert_eq!(introduced("I'm Anne-Marie").as_deref(), Some("Anne-Marie"));
+        }
+
+        /// The cue has to be a word. "Trim" ends in "im" and "him is" contains
+        /// neither cue as a word, but a substring scan would find both.
+        #[test]
+        fn a_cue_inside_a_word_is_not_a_cue() {
+            assert_eq!(introduced("Trim Ahmed's list"), None);
+            assert_eq!(introduced("Whim Ahmed"), None);
+        }
+    }
+
     use super::*;
 
     /// Own temp dir per test — they run in parallel.
@@ -218,7 +398,7 @@ mod tests {
     #[test]
     fn self_intro_forms_hit_and_return_the_written_spelling() {
         let r = two("intro");
-        assert!(!r.is_empty());
+        assert!(!r.names().is_empty());
         for (line, want) in [
             ("I'm Sarah", "Sarah Chen"),
             ("im sarah", "Sarah Chen"),
@@ -311,7 +491,7 @@ mod tests {
     #[test]
     fn missing_attendees_csv_yields_an_empty_roster() {
         let r = Roster::load(Path::new("does-not-exist"));
-        assert!(r.is_empty());
+        assert!(r.names().is_empty());
         assert_eq!(r.self_intro("I'm Sarah"), None);
         assert_eq!(r.addressed("Sarah, what do you think?"), None);
     }

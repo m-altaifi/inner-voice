@@ -102,6 +102,40 @@ carries no epoch, and `Msg::Pause` travels the same FIFO behind it, so one turn
 captured just before the pause still lands. Do not describe pause as a hard
 barrier past the audio worker.
 
+`people.rs` is the voice book: everyone the far end has ever been named as,
+kept between calls in `people.json` (`--people`, `IV_PEOPLE`; empty turns it
+off). It is `Arc<Mutex<Book>>` shared by the THEM whisper worker and `route`
+because the two halves of naming live on different threads and must not be
+split apart — the worker owns embeddings, `route` owns names, and CLAUDE.md's
+rule that naming stays in `route` is why the structure is shared rather than
+owned by either. `voiceid`'s clusters *are* the book's entries, so recognising
+someone from last month and recognising them from earlier in the call are one
+code path; a known person is just a cluster that already has a centroid and a
+name. `MAX_NEW` (8) counts new voices **per call**, not per book — capping the
+book would stop recognising the ninth person you ever met. Only named people
+are saved: an anonymous cluster cannot be recognised again without a name to
+offer. `route` seeds its per-call bindings from `Book::named()` at startup, and
+`remember()` writes a binding back and says so once; it only ever *adds*,
+because `bind`'s conflict rule clears both voices and a single confusing
+meeting must not delete a year-old record. Three ways a voice gets a name, in
+falling order of evidence: `Roster::self_intro` (spelling off a list a human
+wrote), `roster::introduced` (a stranger's self-introduction, capitalisation
+and cue the only evidence there is), `Roster::addressed` (fills a blank only).
+`/who <name>` is the manual path and the one that matters most in practice —
+plenty of calls never say a name aloud at all.
+
+**`roster::introduced` is the one place this program accepts a name nobody
+wrote down, and it is deliberately the narrowest.** Self-introduction only,
+never being addressed: "Ahmed, can you take this?" is far more common than
+"I'm Ahmed" and is exactly the sentence that would enrol someone who is not on
+the call. `OPENERS` is a subset of `INTRO_BEFORE` — the roster path can afford
+`it's` because whatever follows still has to be on a list, but "it's Tuesday"
+and "it's Chrome" would both enrol a person here. A possessive is rejected
+("I'm Ahmed's manager" names the manager), `NOT_A_NAME` catches the capitalised
+sentence-openers, and it walks words rather than byte offsets because
+capitalisation has to be read from the original text while `hits` indexes the
+lowercased copy.
+
 Current additions (2026-09-05): `history.rs` owns the typed 24-turn context.
 `agent.rs` runs optional hotkey-triggered research through Claude Code's
 `claude.exe` (`--agent-cmd`; anything else is rejected at startup); `process.rs` contains

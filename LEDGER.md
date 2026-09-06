@@ -7,6 +7,57 @@ Update the **Now** block after every work session. Nothing else here is chronolo
 
 ## Now
 
+**The voice book (2026-09-06):** "the ai should identify speakers and store the
+data. and they're different people everytime." The second half is the part that
+made the first half wrong: `attendees.csv` is a list somebody writes *before* a
+call, so it only ever worked for a standing meeting with the same three people.
+Everything else stayed THEM forever.
+
+`people.rs` is the store — a name and a CAM++ centroid per person, in
+`people.json` (`--people`, `IV_PEOPLE`; empty disables it and writes nothing
+about anyone's voice to disk). The design decision that kept it small: the
+book's entries *are* `voiceid`'s clusters, seeded at startup instead of starting
+empty, so recognising someone from last month and recognising them from earlier
+in the call is one code path rather than a second lookup bolted alongside. Only
+named people are written; an anonymous cluster cannot be recognised again
+without a name to offer.
+
+Shared `Arc<Mutex<Book>>` between the THEM whisper worker and `route`, because
+naming is split across threads by a rule that is not up for revisiting: the
+worker has the embeddings, `route` has the transcript of both sides. `remember`
+only ever adds — `bind`'s conflict rule clears both voices when two claim one
+name, which is right for the call in front of you and wrong for a record.
+
+`MAX_VOICES` became `MAX_NEW`, counted per call. Eight strangers in one meeting
+is a clustering failure; eight hundred people across a year is just a year, and
+the old cap would have refused to hear the ninth person ever.
+
+`roster::introduced` is the only place this program accepts a name nobody wrote
+down, and it is the narrowest thing that could work: self-introduction only,
+never being addressed — "Ahmed, can you take this?" is far commoner than "I'm
+Ahmed" and is exactly the sentence that enrols someone who is not on the call.
+`OPENERS` drops `it's` (the roster path can afford it; without a list, "it's
+Tuesday" enrols a person). Two of its guards came from tests failing rather than
+from foresight: possessives ("I'm Ahmed's manager" named the manager Ahmed) and
+hyphenated names.
+
+`/who <name>` names whoever spoke last, and is the path that matters most —
+plenty of calls never say a name aloud at all. Bare `/who` reports. `--setup`
+gained a `people` check listing the book, verified live loading a book written
+by hand and reporting `off` when disabled.
+
+98 unit tests (+13), GPU and loopback green, clippy clean. Two members went dead
+in the process (`Book::known`, `Roster::is_empty`) and were deleted rather than
+kept for symmetry.
+
+**Unchanged and still the tail:** the thresholds this all now depends on
+(`voiceid.rs:16`, 0.70/0.50) are still unvalidated, and a store makes them
+matter more, not less — a misattribution now persists to the next call instead
+of dying with this one. `SAME` erring high means "not sure" rather than "wrong
+person", which is the safe direction, but the acceptance call with `--dump` is
+the only way to tune it. That call remains the blocking item for this feature as
+much as for the last three.
+
 **"wtf is sarah chen" (2026-09-06):** this project shipped a sample corpus in
 `knowledge/` — `attendees.csv` naming Sarah Chen (Platform Lead) and Marcus Webb
 (CTO), a `facts.csv` with a headcount of 42, a `company.md`. Placeholder text by

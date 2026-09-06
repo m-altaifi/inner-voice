@@ -234,6 +234,9 @@ pub struct Tune {
     /// Speaker-embedding model. `None` — including a missing file — simply means
     /// far-end turns stay unattributed, which is a working call, not an error.
     pub voices: Option<std::path::PathBuf>,
+    /// Voices named on earlier calls, shared with `route`, which owns the
+    /// names while this side owns the embeddings. See `people`.
+    pub book: std::sync::Arc<std::sync::Mutex<crate::people::Book>>,
     /// Which apps are `THEM`. Empty is the whole speaker mix, as before.
     ///
     /// A *selection*, not a launch-time decision: `/hear` in the question box
@@ -534,7 +537,7 @@ pub fn run(input: Input, ctx: Arc<WhisperContext>, tx: Sender<Msg>, tune: Arc<Tu
             // Only the far end needs identifying — the microphone is the user by
             // construction. A model that will not load costs names, not the call.
             let mut voices = match (who.is_them(), &tune.voices) {
-                (true, Some(path)) => match crate::voiceid::VoiceId::new(path) {
+                (true, Some(path)) => match crate::voiceid::VoiceId::new(path, tune.book.clone()) {
                     Ok(v) => Some(v),
                     Err(e) => {
                         let _ = tx.send(Msg::Sys(format!("speaker id off: {e}")));
@@ -878,6 +881,7 @@ mod tests {
             epoch: Arc::new(AtomicU64::new(0)),
             hear: std::sync::RwLock::new(apps.iter().map(|s| s.to_string()).collect()),
             hear_gen: AtomicU64::new(0),
+            book: std::sync::Arc::new(std::sync::Mutex::new(crate::people::Book::load(None))),
         }
     }
 

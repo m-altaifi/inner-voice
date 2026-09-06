@@ -6,7 +6,7 @@
 //! number the panel shows as `first word` on a live turn.
 use crate::{audio, coach, extract, provider, speak};
 use std::fmt::Write as _;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use wasapi::{DeviceEnumerator, Direction};
 use whisper_rs::{WhisperContext, WhisperContextParameters};
 
@@ -25,6 +25,7 @@ pub struct Inputs {
     pub mic: Option<String>,
     pub loopback: Option<String>,
     pub knowledge: String,
+    pub people: String,
     pub references: String,
     pub agent_cmd: Option<String>,
     pub voice: Option<String>,
@@ -213,6 +214,7 @@ pub fn run(inputs: &Inputs, enumerator: &DeviceEnumerator) -> Vec<Check> {
 
     checks.push(folder("knowledge", &inputs.knowledge, false));
     checks.push(priming(&inputs.knowledge));
+    checks.push(remembered(&inputs.people));
     checks.push(folder("references", &inputs.references, true));
 
     checks.push(match &inputs.agent_cmd {
@@ -240,6 +242,34 @@ pub fn run(inputs: &Inputs, enumerator: &DeviceEnumerator) -> Vec<Check> {
     });
 
     checks
+}
+
+/// Who the far end can be named as before anyone says anything.
+///
+/// The book is written by the app and read by nobody else, so this is the only
+/// view a user has of it — and it holds voice data, which is worth being able
+/// to see the extent of without opening a file of 512 floats per person.
+fn remembered(path: &str) -> Check {
+    if path.is_empty() {
+        return Check {
+            name: "people",
+            ok: true,
+            detail: "off — voices are named for one call and not written down".into(),
+        };
+    }
+    let names: Vec<String> = crate::people::Book::load(Some(PathBuf::from(path)))
+        .named()
+        .into_iter()
+        .map(|(_, n)| n)
+        .collect();
+    Check {
+        name: "people",
+        ok: true,
+        detail: match names.len() {
+            0 => format!("{path} — nobody yet; /who <name> names whoever just spoke"),
+            _ => format!("{path} — {}", names.join(", ")),
+        },
+    }
 }
 
 /// What the corpus does to *whisper*, which its file count cannot show.

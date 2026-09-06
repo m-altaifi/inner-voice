@@ -11,6 +11,10 @@ clips/
 references/
 # Your briefing material, not the project's. knowledge/README.md says why the
 # sample corpus that used to live here was a bug rather than a convenience.
+# Voice embeddings and the names attached to them. Yours, and personal data
+# about other people; never commit it.
+people.json
+people.json.tmp
 knowledge/*
 !knowledge/.gitkeep
 dist/

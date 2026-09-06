@@ -182,8 +182,14 @@ const FORWARD: usize = 0;
 /// This table is the dispatcher as well as the help text. A command used to be
 /// an `if text == ...` arm that only the help table knew about, which is two
 /// places to forget; now adding one is a row.
-const COMMANDS: [(&str, usize, &str); 11] = [
+const COMMANDS: [(&str, usize, &str); 13] = [
     ("/sources", SOURCES, "pick which apps are heard, from a list"),
+    ("/who", FORWARD, "who the panel can put a name to"),
+    (
+        "/who <name>",
+        FORWARD,
+        "name the voice that just spoke; remembered on the next call",
+    ),
     ("/hear", FORWARD, "report which apps are heard as THEM"),
     (
         "/hear <app>[,<app>]",
@@ -1463,12 +1469,13 @@ mod tests {
         for id in [PAUSE, MINIMIZE, COACH, ASK, ADVICE, HELP] {
             assert!(ids.contains(&id), "this action has to keep its key");
         }
-        // `route` only knows `/hear`; a `FORWARD` row naming anything else
-        // would be typed into silence.
+        // A `FORWARD` row is handled by `route` because it writes state the
+        // panel cannot reach — `/hear` the capture selection, `/who` the voice
+        // book. One naming anything else would be typed into silence.
         for (name, id, _) in COMMANDS {
             assert!(name.starts_with('/'), "{name} is not a command");
             assert!(
-                id != FORWARD || name.starts_with("/hear"),
+                id != FORWARD || ["/hear", "/who"].iter().any(|p| name.starts_with(p)),
                 "{name} forwards to a router that does not handle it"
             );
         }
