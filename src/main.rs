@@ -550,6 +550,7 @@ fn main() -> Result<()> {
             hud::Session {
                 research_enabled: false,
                 online: false,
+                model: None,
                 references,
                 epoch: Arc::new(std::sync::atomic::AtomicU64::new(0)),
                 preview: true,
@@ -755,6 +756,7 @@ fn main() -> Result<()> {
         .unwrap_or_else(|_| coach::RESEARCH_PROMPT.to_string());
     let online = provider.is_some();
     let agent = agent_config.map(|config| agent::Agent::new(config, turn_tx.clone()));
+    let model = provider.as_ref().map(|p| p.model.clone());
     let coach = provider.map(|p| coach::Coach::new(p, prompt, turn_tx.clone()));
     {
         let (rx, tx) = (turn_rx, ui_tx.clone());
@@ -859,6 +861,7 @@ fn main() -> Result<()> {
         hud::Session {
             research_enabled,
             online,
+            model,
             references,
             epoch: tune.epoch.clone(),
             preview: false,

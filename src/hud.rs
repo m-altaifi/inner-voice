@@ -168,6 +168,8 @@ pub struct Session {
     pub preview: bool,
     pub research_enabled: bool,
     pub online: bool,
+    /// Provider model in the status line, so the on-screen TTFT is attributable.
+    pub model: Option<String>,
     pub references: References,
     pub epoch: Arc<AtomicU64>,
 }
@@ -589,7 +591,7 @@ impl State {
         status_text(
             mode,
             self.wait(),
-            None,
+            self.session.model.as_deref(),
             self.researching,
             self.pinned,
             self.launched.elapsed() < Duration::from_secs(HINT_SECS),
