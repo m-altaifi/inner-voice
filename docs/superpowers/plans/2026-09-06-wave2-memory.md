@@ -543,7 +543,7 @@ Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
 ### Task 5: The `claude -p` research adapter, pinned to a real capture
 
 **Files:**
-- Create: `tests/fixtures/claude-stream.jsonl` (copy of `E:\OpenSources\katie\inner-voice\.superpowers\sdd\2026-09-06-wave1-glance-and-hearing\claude-stream-trimmed.jsonl`)
+- Create: `tests/fixtures/claude-stream.jsonl` (copy of `E:\OpenSources\katie\inner-voice\.superpowers\sdd\2026-09-06-wave2-memory\claude-stream-trimmed.jsonl`)
 - Modify: `src/agent.rs` (`research`, new `response_claude`, tests), `src/main.rs` (`--agent-root` default and the `--agent-cmd` error text), `.env.example`
 
 **Interfaces:**
@@ -557,7 +557,7 @@ Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
 
 - [ ] **Step 1: Copy the fixture and write the failing tests**
 
-`Copy-Item '.superpowers\sdd\2026-09-06-wave1-glance-and-hearing\claude-stream-trimmed.jsonl' 'tests\fixtures\claude-stream.jsonl'`. Open it with the Read tool and confirm it contains an `init`, an `assistant` `tool_use`, a `user` `tool_result`, and a `result` line whose `result` mentions `inner-voice` — that is the shape the parser is pinned to.
+`Copy-Item '.superpowers\sdd\2026-09-06-wave2-memory\claude-stream-trimmed.jsonl' 'tests\fixtures\claude-stream.jsonl'`. Open it with the Read tool and confirm it contains an `init`, an `assistant` `tool_use`, a `user` `tool_result`, and a `result` line whose `result` mentions `inner-voice` — that is the shape the parser is pinned to.
 
 Add to `agent::tests`:
 
