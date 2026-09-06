@@ -224,16 +224,42 @@ Keep quiet during the first calibration second. Override with `--mic-gate 0.02`
 or `--sys-gate 0.02` if needed (values strictly between 0 and 1).
 Whisper transcribes English with beam search and a full encoder window.
 
+### Choosing what it listens to
+
+This is not only a call coach: `THEM` is whatever you point it at, so the same
+panel transcribes a meeting, a lecture, a video or a colleague's screen share.
+
 To hear only your call app — and not the video you are watching, the music, or
 the voice this app reads advice in — name it: `--hear discord` (any part of the
 name, case-insensitive; `--list-apps` shows what is playing). `THEM` is then that
-app's process tree alone. If the app is not running yet the panel says
-`hearing: waiting for discord…` and hooks it when it starts; if it restarts, the
-panel follows it to its new process. If the app stream cannot be opened at all it
-falls back to the whole speaker mix and says so. `--hear` looks for the app on the
-`--loopback` device — `--list-apps` shows which device it searched — so if your
-call app plays through a different device, name that device with `--loopback`.
-Without `--hear`, `THEM` is everything the speakers play.
+app's process tree alone. Name several with a comma — `--hear discord,chrome` —
+and each gets its own stream; both arrive as `THEM`. If an app is not running yet
+the panel says `hearing: waiting for discord…` and hooks it when it starts; if it
+restarts, the panel follows it to its new process. **You do not have to pick from
+what is playing**: a name is registered and waited for, which is why there is no
+list to choose from — an app that has not made a sound yet has no audio session
+to appear in one. `--hear` looks for apps on the `--loopback` device —
+`--list-apps` shows which device it searched — so if your call app plays through
+a different device, name that device with `--loopback`. Without `--hear`, `THEM`
+is everything the speakers play.
+
+Change it mid-run without restarting: press Ctrl+Shift+F7 for the question box
+and type a `/hear` command.
+
+| Typed | Effect |
+| --- | --- |
+| `/hear` | reports what is selected; changes nothing |
+| `/hear zoom` | hear only Zoom |
+| `/hear zoom, chrome` | hear both, each on its own stream |
+| `/hear off` (or `mix`, `all`) | back to the whole speaker mix |
+
+The switch takes up to two seconds — the streams check for it on the same
+two-second poll that notices an app has closed. `IV_HEAR` in `.env` is the
+durable version of the same list; `/hear` is for the session and is not saved.
+
+For transcription with no coach and no network at all, add `--provider none`:
+turns still reach the panel, `logs/*.jsonl` and `--dump` still write, F7 still
+searches your reference files locally.
 
 An app stream is that app's own digital output, so there is no room noise to
 measure and no calibration second: it takes the floor gate (0.004) and reports

@@ -7,6 +7,41 @@ Update the **Now** block after every work session. Nothing else here is chronolo
 
 ## Now
 
+**Any app, several at once, switchable mid-run (2026-09-06):** `--hear` takes a
+comma list and the selection moved from `Input` into `Tune` (`hear` +
+`hear_gen`), so `/hear` typed in the question box rewrites it without a restart.
+One process-loopback stream per name — WASAPI's activation params take a single
+process tree — all feeding the one THEM whisper worker. `/hear` reports, `/hear
+a,b` selects, `/hear off|mix|all` returns to the speaker mix; the switch lands
+within 2 s on the poll that already notices an app closed. `IV_HEAR` stays the
+durable default; `/hear` is session-only and deliberately not persisted.
+
+The panel gets no picker on purpose: `sessions()` lists only what is *playing*,
+and the useful case is naming an app before it makes a sound — which the
+reacquire loop already waits for. A typed name covers both; a list covers
+neither.
+
+Evidence: `tools/hear_isolation.ps1` is now parameterised rather than copied,
+and both cases pass live on this machine — the original
+`PASS: --hear pwsh heard the elephant and not the giraffe`, and
+`-Hear 'pwsh,powershell' -Expect elephant,giraffe -Reject @()` →
+`PASS: --hear pwsh,powershell heard the elephant/giraffe`, with the two
+sentences interleaved and both tagged THEM. 80 unit tests (+3), GPU and loopback
+green.
+
+**Paid for once:** `run` is shared by *both* capture threads, so the first cut
+had the microphone following `tune.hear` too — it abandoned the mic for the
+app's loopback and the target sentence was logged as `YOU`, failing the
+single-app regression that had passed for weeks. The mic now early-returns to
+`open_endpoint` before the supervisor. The regression test caught it on the
+first run; nothing in the unit ladder could have.
+
+**Not tested automatically:** the live `/hear` switch. Typing into the question
+box needs injected keystrokes, which a `WS_EX_NOACTIVATE` window cannot receive
+(see the input-gesture note in CLAUDE.md). The command semantics are unit
+tested and the generation-bail path is the same code the reacquire loop uses,
+but the end-to-end switch still needs a human.
+
 **Providers measured (2026-09-06):** OpenRouter is the **testing lane only**;
 `.env` stays on gemini direct. Same model both ways, measured on this machine with
 `--setup` and `live_provider_returns_advice`:

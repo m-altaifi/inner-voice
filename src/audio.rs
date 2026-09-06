@@ -234,6 +234,30 @@ pub struct Tune {
     /// Speaker-embedding model. `None` — including a missing file — simply means
     /// far-end turns stay unattributed, which is a working call, not an error.
     pub voices: Option<std::path::PathBuf>,
+    /// Which apps are `THEM`. Empty is the whole speaker mix, as before.
+    ///
+    /// A *selection*, not a launch-time decision: `/hear` in the question box
+    /// rewrites it mid-call. Names are substrings resolved when a stream opens,
+    /// so an app that is not running yet can be registered and waited for —
+    /// which is the point, since `sessions()` only ever lists what is playing
+    /// right now.
+    pub hear: std::sync::RwLock<Vec<String>>,
+    /// Bumped whenever `hear` changes. Every stream below polls it and bails
+    /// within 2 s, which is what makes the switch take effect without a
+    /// restart; a generation rather than a flag so a stream started under the
+    /// old selection can never mistake itself for the new one.
+    pub hear_gen: AtomicU64,
+}
+
+/// `--hear`/`/hear` take a comma list, because WASAPI's activation params name
+/// exactly one process tree: hearing two apps is two streams, and the list is
+/// where that plurality is written down once.
+pub fn parse_hear(spec: &str) -> Vec<String> {
+    spec.split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .collect()
 }
 
 /// Save one utterance next to what whisper made of it.
@@ -339,9 +363,6 @@ pub struct Input {
     pub name: String,
     pub gate_override: Option<f32>,
     pub mute: Option<Arc<AtomicBool>>,
-    /// Hear only this app's process tree as `THEM` (`--hear`). `None` is the
-    /// endpoint mix, as before.
-    pub hear: Option<String>,
 }
 
 /// An open capture stream.
@@ -419,7 +440,6 @@ pub fn run(input: Input, ctx: Arc<WhisperContext>, tx: Sender<Msg>, tune: Arc<Tu
         name,
         gate_override,
         mute,
-        hear,
     } = input;
     initialize_mta().ok()?;
     let dev = DeviceEnumerator::new()?
@@ -436,6 +456,12 @@ pub fn run(input: Input, ctx: Arc<WhisperContext>, tx: Sender<Msg>, tune: Arc<Tu
     // that ends a turn was not being counted while the GPU worked. Capture is a
     // realtime deadline and inference is not, so they do not belong on one
     // thread.
+    // Only the far end has a selectable source. `run` is shared by both capture
+    // threads, and a mic that followed `tune.hear` would abandon the microphone
+    // for an app's loopback the moment `--hear` was set — which is exactly what
+    // it did once: `hear_isolation.ps1` failed with the target app's sentence
+    // logged as YOU, because both threads had opened the same process stream.
+    let selectable = who.is_them();
     // `who` moves to the worker, which is what stamps each turn; the capture
     // loop keeps only the display label for its own status messages.
     let label = who.label().to_string();
@@ -522,13 +548,6 @@ pub fn run(input: Input, ctx: Arc<WhisperContext>, tx: Sender<Msg>, tune: Arc<Tu
         gate_override,
         mute: mute.as_ref(),
     };
-    let Some(app) = hear else {
-        // The endpoint mix, exactly as before: a stream error ends the thread
-        // and `main` reports it.
-        let stream = open_endpoint(&dev)?;
-        return pump(&stream, &feed, &mut || true);
-    };
-
     // Calibration measures a *room* through a mic — noise floor, fan, street.
     // A process-loopback stream has none of that: it is the app's own digital
     // output, silence in it is exactly 0.0, and it delivers nothing at all
@@ -544,11 +563,95 @@ pub fn run(input: Input, ctx: Arc<WhisperContext>, tx: Sender<Msg>, tune: Arc<Tu
         ..feed
     };
 
+    if !selectable {
+        // The mic: one endpoint stream for the life of the thread, exactly as
+        // before. It must not enter the supervisor even to be handed an empty
+        // selection, or a `/hear` would bump the generation and restart the
+        // microphone for nothing.
+        let stream = open_endpoint(&dev)?;
+        return pump(&stream, &feed, &mut || true);
+    }
+
+    // The supervisor. Each pass reads the selection, serves it until the
+    // generation moves, then reads it again — so `/hear` mid-call is a switch
+    // and not a restart. `pump` polls `still_there` every 2 s, which is also
+    // this loop's reaction time; a source change is not worth a faster poll on
+    // a thread with a realtime deadline.
+    loop {
+        let generation = tune.hear_gen.load(Ordering::SeqCst);
+        let wanted = tune.hear.read().unwrap_or_else(|e| e.into_inner()).clone();
+        let current = || tune.hear_gen.load(Ordering::SeqCst) == generation;
+
+        if wanted.is_empty() {
+            // The endpoint mix, exactly as before — except that it now yields
+            // when the selection changes instead of owning the thread forever.
+            let stream = open_endpoint(&dev)?;
+            let outcome = pump(&stream, &feed, &mut || current());
+            stream.close();
+            match outcome {
+                // A real stream error with the selection unchanged is what it
+                // always was: fatal, and `main` reports it.
+                Err(e) if current() => return Err(e),
+                _ => continue,
+            }
+        }
+
+        // One process-loopback client per app: WASAPI's activation params take
+        // a single process tree, so hearing two apps is two streams. They share
+        // the one whisper worker through `utt_tx`.
+        // ponytail: that serialises inference — two apps talking at the same
+        // instant queue rather than decode in parallel. One worker per app is
+        // the upgrade, and costs a `WhisperState` (~50 MB) each.
+        let solo = wanted.len() == 1;
+        // Borrowed once and captured by `move`, so each thread takes a copy of
+        // the *references* — moving the `Feed`s themselves would hand the first
+        // app everything the second one needs.
+        let (feed, app_feed, device, dir) = (&feed, &app_feed, &name, &dir);
+        std::thread::scope(|scope| {
+            for app in &wanted {
+                scope.spawn(move || {
+                    if let Err(e) = hear_app(app, device, dir, feed, app_feed, solo, generation) {
+                        let _ = feed.tx.send(Msg::Sys(format!("hearing: {app} stopped: {e}")));
+                    }
+                });
+            }
+        });
+        // Every app thread has ended, which means the selection moved (or each
+        // gave up). Re-read it rather than spin: if nothing changed, the next
+        // pass rebuilds the same set and the reacquire waits are back.
+        if current() {
+            std::thread::sleep(Duration::from_secs(2));
+        }
+    }
+}
+
+/// One app's process tree, reacquired for as long as it stays in the selection.
+///
+/// Runs on its own thread with its own `initialize_mta` and its own `Device`,
+/// because COM interfaces are not `Send` — the same rule `main` follows when it
+/// resolves devices to *names* and lets each capture thread reopen by name.
+#[allow(clippy::too_many_arguments)]
+fn hear_app(
+    app: &str,
+    device: &str,
+    dir: &Direction,
+    feed: &Feed,
+    app_feed: &Feed,
+    solo: bool,
+    generation: u64,
+) -> Result<()> {
+    initialize_mta().ok()?;
+    let dev = DeviceEnumerator::new()?
+        .get_device_collection(dir)?
+        .get_device_with_name(device)?;
+    let (tx, tune) = (feed.tx, feed.tune);
+    let current = || tune.hear_gen.load(Ordering::SeqCst) == generation;
+
     // The app may not be running yet — the call app usually starts second —
     // and may restart with a new pid mid-call. Neither is an error here.
     let mut waiting_said = false;
-    loop {
-        let pid = match sessions(&dev).map(|list| resolve(&list, &app)) {
+    while current() {
+        let pid = match sessions(&dev).map(|list| resolve(&list, app)) {
             Ok(Some(pid)) => pid,
             Ok(None) => {
                 if !waiting_said {
@@ -567,16 +670,28 @@ pub fn run(input: Input, ctx: Arc<WhisperContext>, tx: Sender<Msg>, tune: Arc<Tu
         waiting_said = false;
         let stream = match open_process(pid) {
             Ok(stream) => stream,
-            Err(e) => {
+            // Falling back to the whole mix is right for one app and wrong for
+            // several: the mix already contains the others, so a second stream
+            // over it would transcribe them twice.
+            Err(e) if solo => {
                 tx.send(Msg::Sys(format!(
                     "hearing: {app} failed: {e}; using the whole speaker mix"
                 )))?;
                 let stream = open_endpoint(&dev)?;
-                return pump(&stream, &feed, &mut || true);
+                let outcome = pump(&stream, feed, &mut || current());
+                stream.close();
+                return outcome.or(Ok(()));
+            }
+            Err(e) => {
+                tx.send(Msg::Sys(format!("hearing: {app} failed: {e}")))?;
+                std::thread::sleep(Duration::from_secs(2));
+                continue;
             }
         };
         tx.send(Msg::Sys(format!("hearing: {app} (pid {pid})")))?;
-        if let Err(e) = pump(&stream, &app_feed, &mut || alive(pid)) {
+        if let Err(e) = pump(&stream, app_feed, &mut || alive(pid) && current())
+            && current()
+        {
             tx.send(Msg::Sys(format!("hearing: {app} stopped: {e}")))?;
         }
         stream.close();
@@ -584,10 +699,11 @@ pub fn run(input: Input, ctx: Arc<WhisperContext>, tx: Sender<Msg>, tune: Arc<Tu
         // restart: reopening immediately would spin this capture thread and
         // flood Diagnostics with two `Sys` per pass. The app-closed path keeps
         // its reacquire latency — `alive` is false there.
-        if alive(pid) {
+        if alive(pid) && current() {
             std::thread::sleep(Duration::from_secs(2));
         }
     }
+    Ok(())
 }
 
 /// Read, gate, segment — all microseconds — until the stream fails or
@@ -704,6 +820,17 @@ fn calibrated_gate(cal: &mut [f32]) -> f32 {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn hear_takes_a_comma_list_and_ignores_the_gaps() {
+        assert_eq!(parse_hear("chrome"), ["chrome"]);
+        assert_eq!(parse_hear(" chrome , zoom "), ["chrome", "zoom"]);
+        // A trailing comma is what a half-typed list looks like; it must not
+        // become an empty name, which `resolve` would match against every app.
+        assert_eq!(parse_hear("chrome,,zoom,"), ["chrome", "zoom"]);
+        assert!(parse_hear("  ,  ").is_empty());
+        assert!(parse_hear("").is_empty());
+    }
     use super::*;
 
     #[test]

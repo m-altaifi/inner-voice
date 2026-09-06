@@ -46,9 +46,18 @@ posts as `WM_HOTKEY`. The conversation pane grows with the transcript up to
 which also re-sticks when a reader scrolls back to the end — the hand-written
 Win32 version could not. Decision 7's glance rules are in `Tag` (colours) and
 `status_text` (the wait as a number, which doubles as the standing TTFT
-instrument); both are tested. `THEM` capture is per-app when `--hear` names one
-(`audio::open_process` on the app's process tree), with reacquire when it starts
-late or restarts; the endpoint mix is the fallback. The app is looked for only in
+instrument); both are tested. `THEM` capture is per-app when `--hear` names any (`audio::open_process` on each
+app's process tree, one stream per name because WASAPI's activation params take
+a single tree), with reacquire when one starts late or restarts; the endpoint
+mix is the fallback, and only when a *single* app was named — falling back with
+several would transcribe the others twice, since the mix already contains them.
+The selection lives in `Tune` (`hear` + `hear_gen`), not in `Input`, because
+`/hear` in the question box rewrites it mid-call: every stream polls the
+generation on the same two-second tick that notices an app closed, and bails.
+**`run` is shared by both capture threads, so a selectable source must be gated
+to `THEM`** — the mic early-returns to `open_endpoint` before the supervisor.
+Letting it through cost one red `hear_isolation.ps1`: the mic thread opened the
+same process loopback and the target app's sentence was logged as `YOU`. The app is looked for only in
 the `--loopback` device's own sessions, so an app playing elsewhere is never
 found. The *whole* window is the drag grip (`hit_test` returns
 `Grab::Move` for anything that is not a resize edge), which is why
@@ -233,6 +242,12 @@ Traps here, each already paid for once (see LEDGER):
   combination itself and requiring failure, and prints an explicit SKIPPED line
   when injection is unavailable rather than passing quietly. The drag gesture
   has no substitute: `hit_test` is unit-tested, and the gesture needs a human.
+- **The app selector is a typed command, not a control.** `/hear` is parsed in
+  `route()`'s `Msg::Question` arm because F7's box is the only place in a
+  no-controls panel where a name can be typed — and unlike a picker of what is
+  playing, a typed name can register an app that has not started yet, which is
+  what `sessions()` can never list. Bare `/hear` reports rather than clears: a
+  user checking the selection should not risk dropping the far end.
 - **A process-loopback stream whose app exits delivers silence, not an error.**
   `audio::pump` therefore polls `alive(pid)` every 2 s and bails, which is what
   lets `run`'s reacquire loop hook the app again under its new pid. Do not

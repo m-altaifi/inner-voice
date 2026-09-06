@@ -14,7 +14,18 @@
 # Speech comes from SAPI in each process directly, so the audio session belongs
 # to that process. The two shells have different image names -- `pwsh` and
 # `powershell` -- which is what --hear keys on. Run this from powershell.exe.
-param([string]$Exe = '.\target\release\inner-voice.exe')
+#
+# Parameterised so the multi-app case is the same harness, not a second copy
+# of it: -Hear takes the comma list --hear takes, and the two word sets say
+# what must and must not reach the far end.
+#   .\tools\hear_isolation.ps1                       # one app, the original run
+#   .\tools\hear_isolation.ps1 -Hear 'pwsh,powershell' -Expect elephant,giraffe -Reject @()
+param(
+    [string]$Exe = '.\target\release\inner-voice.exe',
+    [string]$Hear = 'pwsh',
+    [string[]]$Expect = @('elephant'),
+    [string[]]$Reject = @('giraffe')
+)
 $ErrorActionPreference = 'Stop'
 if (-not (Get-Command pwsh.exe -ErrorAction SilentlyContinue)) { throw 'pwsh.exe (PowerShell 7) is needed as the second voice' }
 $log = Join-Path $env:TEMP 'iv-hear-isolation'
@@ -28,7 +39,7 @@ Start-Sleep -Milliseconds 300
 Remove-Item -Recurse -Force $log -ErrorAction SilentlyContinue
 if (Test-Path $log) { throw "could not clear $log; a stale inner-voice may still hold it" }
 
-$app = Start-Process -PassThru -FilePath $Exe -ArgumentList '--provider','none','--hear','pwsh','--log',$log
+$app = Start-Process -PassThru -FilePath $Exe -ArgumentList '--provider','none','--hear',$Hear,'--log',$log
 try {
     Start-Sleep -Seconds 30   # model load and warm-up; the panel says "hearing: waiting for pwsh..."
     # An app that died in warm-up is otherwise reported as "not transcribed" 45 s later.
@@ -48,6 +59,11 @@ try {
 $lines = Get-ChildItem $log -Filter *.jsonl | Get-Content
 $far = ($lines | Where-Object { $_ -notmatch '"who":"YOU"' }) -join ' '
 "far end heard: $far"
-if ($far -notmatch 'elephant') { throw 'The named app was not transcribed as the far end' }
-if ($far -match 'giraffe') { throw 'The decoy app leaked into the far end: --hear is not isolating' }
-'PASS: --hear pwsh heard the elephant and not the giraffe'
+foreach ($word in $Expect) {
+    if ($far -notmatch $word) { throw "A named app was not transcribed as the far end: '$word' is missing" }
+}
+foreach ($word in $Reject) {
+    if ($far -match $word) { throw "An unnamed app leaked into the far end: '$word' is present" }
+}
+$not = if ($Reject) { " and not the $($Reject -join '/')" } else { '' }
+"PASS: --hear $Hear heard the $($Expect -join '/')$not"

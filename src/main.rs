@@ -200,7 +200,8 @@ struct Args {
     #[arg(long, env = "IV_ES", default_value = "es.exe")]
     es: std::path::PathBuf,
 
-    /// Hear only this app as THEM (any part of its name, see --list-apps).
+    /// Hear only these apps as THEM: a comma list, each any part of a name
+    /// (see --list-apps). `/hear` in the question box changes it mid-call.
     /// Without it, THEM is everything the speakers play.
     #[arg(long, env = "IV_HEAR")]
     hear: Option<String>,
@@ -371,6 +372,15 @@ fn route(
                 continue;
             }
             Msg::Question(question) => {
+                // The panel has no controls by design, so F7's box is the one
+                // place a name can be typed — which makes it the app selector
+                // too. A command here costs no hotkey and no new surface, and
+                // unlike a list of what is playing it can register an app that
+                // has not started yet.
+                if let Some(spec) = question.strip_prefix("/hear") {
+                    set_hearing(&tune, &tx, spec.trim());
+                    continue;
+                }
                 refresh_corpus(&mut corpus, &mut roster, &persona, &coach, &tune, &tx);
                 if let Some(coach) = &coach {
                     coach.ask(format!(
@@ -501,6 +511,42 @@ fn record(log: &Option<log::Log>, tx: &Sender<Msg>, who: &str, text: &str) {
     {
         let _ = tx.send(Msg::Sys(format!("logging failed: {e:#}")));
     }
+}
+
+/// `/hear` — report, or rewrite, which apps are `THEM`.
+///
+/// Bare `/hear` reports rather than clears: clearing is the destructive read,
+/// and a user checking what is selected should not have to risk it. `off`,
+/// `mix` and `all` are the ways back to the whole speaker mix.
+fn set_hearing(tune: &Arc<audio::Tune>, tx: &Sender<Msg>, spec: &str) {
+    fn describe(apps: &[String]) -> String {
+        if apps.is_empty() {
+            "the whole speaker mix".to_string()
+        } else {
+            apps.join(" + ")
+        }
+    }
+    if spec.is_empty() {
+        let apps = tune.hear.read().unwrap_or_else(|e| e.into_inner());
+        let _ = tx.send(Msg::Sys(format!(
+            "hearing: {} — /hear <app>[,<app>] to change, /hear off for the mix",
+            describe(&apps)
+        )));
+        return;
+    }
+    let wanted = match spec {
+        "off" | "mix" | "all" => Vec::new(),
+        spec => audio::parse_hear(spec),
+    };
+    *tune.hear.write().unwrap_or_else(|e| e.into_inner()) = wanted.clone();
+    // After the write, never before: a stream that sees the new generation must
+    // find the new selection already there, or it re-serves the old one.
+    tune.hear_gen
+        .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    let _ = tx.send(Msg::Sys(format!(
+        "hearing: switching to {} (up to 2 s)",
+        describe(&wanted)
+    )));
 }
 
 fn local_answer(tx: &Sender<Msg>, references: &references::References, question: &str) {
@@ -710,6 +756,13 @@ fn main() -> Result<()> {
         dump: args.dump.map(std::path::PathBuf::from),
         voices,
         epoch: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+        hear: std::sync::RwLock::new(
+            args.hear
+                .as_deref()
+                .map(audio::parse_hear)
+                .unwrap_or_default(),
+        ),
+        hear_gen: std::sync::atomic::AtomicU64::new(0),
     });
 
     let (turn_tx, turn_rx) = unbounded();
@@ -779,13 +832,12 @@ fn main() -> Result<()> {
 
     // YOU hears itself. THEM is the endpoint mix, or one app's process tree
     // with --hear; only the endpoint mix is deafened while the voice talks.
-    for (who, dir, name, gate, mute, hear) in [
+    for (who, dir, name, gate, mute) in [
         (
             Who::You,
             Direction::Capture,
             mic_name.clone(),
             args.mic_gate,
-            None,
             None,
         ),
         (
@@ -797,7 +849,6 @@ fn main() -> Result<()> {
             sys_name.clone(),
             args.sys_gate,
             mute.clone(),
-            args.hear.clone(),
         ),
     ] {
         let (ctx, tx, tune) = (ctx.clone(), turn_tx.clone(), tune.clone());
@@ -809,7 +860,6 @@ fn main() -> Result<()> {
                 name,
                 gate_override: gate,
                 mute,
-                hear,
             };
             if let Err(e) = audio::run(input, ctx, tx.clone(), tune) {
                 let _ = tx.send(Msg::Sys(format!("{label} stopped: {e}")));
@@ -840,7 +890,10 @@ fn main() -> Result<()> {
     let _ = ui_tx.send(Msg::Sys(coach_note));
     let _ = ui_tx.send(Msg::Sys(format!("YOU <- {mic_name}")));
     let _ = ui_tx.send(Msg::Sys(match &args.hear {
-        Some(app) => format!("THEM <- {app} (app loopback on {sys_name})"),
+        Some(apps) => format!(
+            "THEM <- {} (app loopback on {sys_name})",
+            audio::parse_hear(apps).join(" + ")
+        ),
         None => format!("THEM <- {sys_name} (loopback)"),
     }));
     if args.speak && args.hear.is_none() {
@@ -866,6 +919,58 @@ fn main() -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+
+    fn hearing_tune(apps: &[&str]) -> Arc<audio::Tune> {
+        Arc::new(audio::Tune {
+            prompt: std::sync::RwLock::new(String::new()),
+            dump: None,
+            voices: None,
+            epoch: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            hear: std::sync::RwLock::new(apps.iter().map(|s| s.to_string()).collect()),
+            hear_gen: std::sync::atomic::AtomicU64::new(0),
+        })
+    }
+    fn hear(tune: &Arc<audio::Tune>, spec: &str) -> (Vec<String>, u64, String) {
+        let (tx, rx) = crossbeam_channel::unbounded();
+        set_hearing(tune, &tx, spec);
+        let note = match rx.try_recv() {
+            Ok(Msg::Sys(s)) => s,
+            _ => panic!("expected exactly one Sys note"),
+        };
+        (
+            tune.hear.read().unwrap().clone(),
+            tune.hear_gen.load(std::sync::atomic::Ordering::SeqCst),
+            note,
+        )
+    }
+
+    /// Bare `/hear` is the one a user types to *check*. If it cleared the
+    /// selection it would silently drop the far end mid-call.
+    #[test]
+    fn bare_hear_reports_and_changes_nothing() {
+        let tune = hearing_tune(&["chrome"]);
+        let (apps, generation, note) = hear(&tune, "");
+        assert_eq!(apps, ["chrome"]);
+        assert_eq!(generation, 0, "reporting must not retire the live streams");
+        assert!(note.starts_with("hearing: chrome"), "{note}");
+    }
+
+    #[test]
+    fn hear_sets_a_list_and_off_returns_to_the_mix() {
+        let tune = hearing_tune(&[]);
+        let (apps, generation, note) = hear(&tune, "chrome, zoom");
+        assert_eq!(apps, ["chrome", "zoom"]);
+        assert_eq!(generation, 1);
+        assert!(note.contains("chrome + zoom"), "{note}");
+
+        for (spec, pass) in [("off", 2), ("mix", 3), ("all", 4)] {
+            *tune.hear.write().unwrap() = vec!["chrome".into()];
+            let (apps, generation, note) = hear(&tune, spec);
+            assert!(apps.is_empty(), "{spec} should clear the selection");
+            assert_eq!(generation, pass, "every change retires the live streams");
+            assert!(note.contains("the whole speaker mix"), "{note}");
+        }
+    }
     use super::*;
     #[test]
     fn invalid_gates_fail_before_loading_models() {
