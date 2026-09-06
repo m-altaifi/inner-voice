@@ -405,6 +405,7 @@ fn open_process(pid: u32) -> Result<Stream> {
 }
 
 /// Everything the capture loop needs that is not the stream itself.
+#[derive(Clone, Copy)]
 struct Feed<'a> {
     label: &'a str,
     tx: &'a Sender<Msg>,
@@ -531,6 +532,18 @@ pub fn run(input: Input, ctx: Arc<WhisperContext>, tx: Sender<Msg>, tune: Arc<Tu
         return pump(&stream, &feed, &mut || true);
     };
 
+    // Calibration measures a *room* through a mic — noise floor, fan, street.
+    // A process-loopback stream has none of that: it is the app's own digital
+    // output, silence in it is exactly 0.0, and it delivers nothing at all
+    // until the app plays. So the calibration second would land on the first
+    // sentence and set the gate from speech — measured at 0.5942 once, which
+    // gated every later turn out. The floor is the right gate here, and
+    // `--sys-gate` still overrides it.
+    let app_feed = Feed {
+        gate_override: Some(gate_override.unwrap_or(GATE_FLOOR)),
+        ..feed
+    };
+
     // The app may not be running yet — the call app usually starts second —
     // and may restart with a new pid mid-call. Neither is an error here.
     let mut waiting_said = false;
@@ -563,7 +576,7 @@ pub fn run(input: Input, ctx: Arc<WhisperContext>, tx: Sender<Msg>, tune: Arc<Tu
             }
         };
         tx.send(Msg::Sys(format!("hearing: {app} (pid {pid})")))?;
-        if let Err(e) = pump(&stream, &feed, &mut || alive(pid)) {
+        if let Err(e) = pump(&stream, &app_feed, &mut || alive(pid)) {
             tx.send(Msg::Sys(format!("hearing: {app} stopped: {e}")))?;
         }
         stream.close();
