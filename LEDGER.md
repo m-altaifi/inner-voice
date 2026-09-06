@@ -7,6 +7,32 @@ Update the **Now** block after every work session. Nothing else here is chronolo
 
 ## Now
 
+**The app picker (2026-09-06):** asked for three times, and refused twice on a
+misreading of the panel's own rule. The no-controls rule is about *focus* — a
+control that must be focused to be pressed costs a mouse grab and steals the
+keyboard from the app being listened to. A `WS_EX_NOACTIVATE` window still
+receives mouse input, which is exactly how dragging has always worked, so a
+clickable row costs neither. The rule never forbade this; I did.
+
+Ctrl+Shift+F4 now opens Sources: the whole speaker mix as the first row, then
+every app `audio::playing` finds on the loopback device. Click to hear one,
+click more for several at once, click again to turn one off. A selected app
+that has gone quiet stays listed as `— not playing`, so a click can always undo
+itself. `Tune::hear_only` / `Tune::toggle` are the one write path, shared with
+`/hear`, so the write-then-bump ordering is written down once.
+
+`/hear` stays, and now for a stated reason rather than an excuse: a list can
+only offer apps with a live audio session, and naming an app *before* it starts
+is precisely what the reacquire loop exists for. Diagnostics gave up F4 and
+moved to `/diagnostics` — it is a when-something-breaks view, which is what the
+command surface is for.
+
+Verified live rather than argued: launched with `--hear notrunning` while six
+apps were playing, posted the hotkey, and read the panel's own mirror —
+`view: 115`, all six offered with `playing=True`, and `notrunning` listed with
+`playing=False`. `mirror_state` now carries `sources` and `hearing` so the
+picker is scriptable at all. 85 unit tests (+2).
+
 **The voice (2026-09-06):** "so robotic" had a one-line cause. `--speak` used
 whatever `ISpVoice` picks with no `SetVoice`, which is the SAPI5 category — and
 that category holds only *Desktop* voices, Microsoft's oldest concatenative set.

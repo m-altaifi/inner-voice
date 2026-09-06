@@ -249,6 +249,55 @@ pub struct Tune {
     pub hear_gen: AtomicU64,
 }
 
+impl Tune {
+    /// What is heard as `THEM` right now. Empty is the whole speaker mix.
+    pub fn hearing(&self) -> Vec<String> {
+        self.hear.read().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+    /// Change it. The generation is bumped *after* the write, never before: a
+    /// stream that sees the new generation must find the new selection already
+    /// there, or it re-serves the old one and the switch silently does nothing.
+    ///
+    /// One path for both surfaces — the Sources pane and `/hear` — so the
+    /// ordering rule above is written down once.
+    pub fn hear_only(&self, apps: Vec<String>) {
+        *self.hear.write().unwrap_or_else(|e| e.into_inner()) = apps;
+        self.hear_gen.fetch_add(1, Ordering::SeqCst);
+    }
+    /// Add or remove one app, which is what clicking a row in the picker does.
+    /// Returns the selection afterwards.
+    pub fn toggle(&self, app: &str) -> Vec<String> {
+        let mut apps = self.hearing();
+        let lower = app.to_lowercase();
+        // Matched the way a stream resolves it, not by equality: `/hear chr`
+        // selects "chrome", and clicking that row must turn the same selection
+        // *off* rather than adding a second, redundant entry for it.
+        match apps.iter().position(|a| lower.contains(&a.to_lowercase())) {
+            Some(i) => {
+                apps.remove(i);
+            }
+            None => apps.push(app.to_string()),
+        }
+        self.hear_only(apps.clone());
+        apps
+    }
+}
+
+/// Names of the apps playing on a named render device, for the Sources pane.
+///
+/// Takes the device *name* and opens it here because COM interfaces are not
+/// `Send`: the panel runs on the main thread (already MTA, `main` put it there
+/// to enumerate devices) and so must resolve its own.
+pub fn playing(device: &str) -> Result<Vec<String>> {
+    let dev = DeviceEnumerator::new()?
+        .get_device_collection(&Direction::Render)?
+        .get_device_with_name(device)?;
+    let mut apps = sessions(&dev)?;
+    // Active first: the one making noise now is the one being looked for.
+    apps.sort_by_key(|a| !a.active);
+    Ok(apps.into_iter().map(|a| a.name).collect())
+}
+
 /// `--hear`/`/hear` take a comma list, because WASAPI's activation params name
 /// exactly one process tree: hearing two apps is two streams, and the list is
 /// where that plurality is written down once.
@@ -820,6 +869,39 @@ fn calibrated_gate(cal: &mut [f32]) -> f32 {
 
 #[cfg(test)]
 mod tests {
+
+    fn tune_hearing(apps: &[&str]) -> Tune {
+        Tune {
+            prompt: std::sync::RwLock::new(String::new()),
+            dump: None,
+            voices: None,
+            epoch: Arc::new(AtomicU64::new(0)),
+            hear: std::sync::RwLock::new(apps.iter().map(|s| s.to_string()).collect()),
+            hear_gen: AtomicU64::new(0),
+        }
+    }
+
+    /// Clicking a row must turn off a selection that was made by substring, or
+    /// `/hear chr` then a click on "chrome" would add a second entry for the
+    /// same app and the row would stay lit.
+    #[test]
+    fn clicking_a_row_undoes_a_selection_made_by_substring() {
+        let tune = tune_hearing(&["chr"]);
+        assert!(tune.toggle("chrome").is_empty());
+        assert_eq!(tune.hear_gen.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn toggling_adds_removes_and_retires_the_streams_each_time() {
+        let tune = tune_hearing(&[]);
+        assert_eq!(tune.toggle("chrome"), ["chrome"]);
+        assert_eq!(tune.toggle("zoom"), ["chrome", "zoom"]);
+        assert_eq!(tune.toggle("chrome"), ["zoom"]);
+        // Every change has to bump the generation, or a stream serving the old
+        // selection never learns to bail.
+        assert_eq!(tune.hear_gen.load(Ordering::SeqCst), 3);
+        assert!(tune.hearing() == vec!["zoom".to_string()]);
+    }
 
     #[test]
     fn hear_takes_a_comma_list_and_ignores_the_gaps() {

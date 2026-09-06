@@ -651,6 +651,8 @@ fn main() -> Result<()> {
                 model: None,
                 references,
                 epoch: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+                tune: None,
+                loopback: String::new(),
                 preview: true,
             },
         );
@@ -968,6 +970,8 @@ fn main() -> Result<()> {
             model,
             references,
             epoch: tune.epoch.clone(),
+            tune: Some(tune.clone()),
+            loopback: sys_name.clone(),
             preview: false,
         },
     )

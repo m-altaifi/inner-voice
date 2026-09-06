@@ -54,6 +54,7 @@ const RESEARCH: usize = 106;
 const CLEAR: usize = 107;
 const ASK: usize = 108;
 const COACH: usize = 109;
+const SOURCES: usize = 115;
 const CANCEL: usize = 110;
 const MINIMIZE: usize = 111;
 const CLOSE: usize = 112;
@@ -152,7 +153,7 @@ const KEYS: [(u32, usize, &str); 12] = [
     (VK_F1.0 as u32, ADVICE, "Advice"),
     (VK_F2.0 as u32, TRANSCRIPT, "Whole conversation"),
     (VK_F3.0 as u32, REFERENCES, "References"),
-    (VK_F4.0 as u32, DIAGNOSTICS, "Diagnostics"),
+    (VK_F4.0 as u32, SOURCES, "Choose what it listens to"),
     (VK_F5.0 as u32, PAUSE, "Pause / resume transcription"),
     (VK_F6.0 as u32, MINIMIZE, "Hide / show the panel"),
     (
@@ -170,11 +171,12 @@ const KEYS: [(u32, usize, &str); 12] = [
 /// Typed into the question box (Ctrl+Shift+F7), for the actions a key would be
 /// the wrong shape for: ones that need a *name*, and ones destructive enough
 /// that a fumbled F-key mid-sentence should not reach them.
-const COMMANDS: [(&str, &str); 4] = [
+const COMMANDS: [(&str, &str); 5] = [
     ("/hear", "report which apps are heard as THEM"),
     ("/hear <app>[,<app>]", "hear only these; an app not yet running is waited for"),
     ("/hear off", "back to the whole speaker mix"),
     ("/clear", "clear references"),
+    ("/diagnostics", "the diagnostics log"),
 ];
 
 fn legend() -> Vec<(String, &'static str)> {
@@ -191,6 +193,13 @@ pub struct Session {
     pub model: Option<String>,
     pub references: References,
     pub epoch: Arc<AtomicU64>,
+    /// The selection the Sources pane reads and writes. Shared with the capture
+    /// threads, which is what makes a click take effect without a restart.
+    pub tune: Option<Arc<crate::audio::Tune>>,
+    /// Loopback device *name*, not a `Device`: COM interfaces are not `Send`,
+    /// so the pane opens it on this thread when it needs the app list — the
+    /// same rule every capture thread follows.
+    pub loopback: String,
 }
 
 /// What a drag on the window chrome should do.
@@ -379,6 +388,11 @@ struct State {
     focus_question: bool,
     view: usize,
     paused: bool,
+    /// Apps on the loopback device, as (name, playing now). Refreshed only while
+    /// the Sources pane is open — enumerating WASAPI sessions every frame would
+    /// put COM work on the render loop for a pane nobody is looking at.
+    sources: Vec<(String, bool)>,
+    sources_read: Option<std::time::Instant>,
     /// Whether a far-end turn still asks the coach on its own. Owned by
     /// `route`, mirrored here for the status line only.
     coaching: bool,
@@ -546,7 +560,7 @@ impl State {
     }
     fn command(&mut self, id: usize, ctx: &egui::Context) {
         match id {
-            ADVICE | TRANSCRIPT | REFERENCES | DIAGNOSTICS | HELP => self.view = id,
+            ADVICE | TRANSCRIPT | REFERENCES | DIAGNOSTICS | HELP | SOURCES => self.view = id,
             MINIMIZE => {
                 let hidden = ctx.input(|i| i.viewport().minimized.unwrap_or(false));
                 ctx.send_viewport_cmd(ViewportCommand::Minimized(!hidden));
@@ -598,6 +612,12 @@ impl State {
                 // Handled here rather than in `route`: a clear also empties the
                 // panel's own import list, which `route` cannot reach. Each
                 // command belongs to whoever owns the state it changes.
+                if text == "/diagnostics" {
+                    self.question.clear();
+                    self.typing = false;
+                    self.command(DIAGNOSTICS, ctx);
+                    return;
+                }
                 if text == "/clear" {
                     self.question.clear();
                     self.typing = false;
@@ -625,6 +645,93 @@ impl State {
             _ => Wait::Idle,
         }
     }
+    /// The app picker. A list you click, which is what a selection should be —
+    /// `/hear` still exists for the one thing a list cannot do, naming an app
+    /// that has not started yet and so has no audio session to appear in.
+    ///
+    /// Clickable without focus: a `WS_EX_NOACTIVATE` window still receives
+    /// mouse input, which is how dragging already works. Nothing here takes the
+    /// keyboard from whatever you are actually in.
+    fn sources_pane(&mut self, ui: &mut egui::Ui) {
+        let Some(tune) = self.session.tune.clone() else {
+            ui.label(RichText::new("No audio in this mode.").color(MUTED));
+            return;
+        };
+        self.refresh_sources();
+        let selected = tune.hearing();
+        let matches = |app: &str| {
+            let app = app.to_lowercase();
+            selected.iter().any(|s| app.contains(&s.to_lowercase()))
+        };
+
+        ui.label(
+            RichText::new("Click to choose what THEM is. Several can be on at once.").color(MUTED),
+        );
+        ui.add_space(8.0);
+        if ui
+            .selectable_label(selected.is_empty(), RichText::new("Whole speaker mix").size(16.0))
+            .clicked()
+        {
+            tune.hear_only(Vec::new());
+            self.notice = "hearing: the whole speaker mix (up to 2 s)".into();
+        }
+        ui.add_space(4.0);
+        for (name, live) in self.sources.clone() {
+            let label = match live {
+                true => RichText::new(&name).size(16.0),
+                // Selected but silent: it was named before it started, or it
+                // stopped. The stream is still waiting for it either way.
+                false => RichText::new(format!("{name}  — not playing")).size(16.0).color(MUTED),
+            };
+            if ui.selectable_label(matches(&name), label).clicked() {
+                let now = tune.toggle(&name);
+                self.notice = match now.is_empty() {
+                    true => "hearing: the whole speaker mix (up to 2 s)".into(),
+                    false => format!("hearing: {} (up to 2 s)", now.join(" + ")),
+                };
+            }
+        }
+        if self.sources.is_empty() {
+            ui.label(
+                RichText::new("Nothing is playing yet. Apps appear here as they make sound;                                to name one before it starts, type /hear <app> in the question box.")
+                    .color(MUTED),
+            );
+        }
+        ui.add_space(10.0);
+        ui.label(
+            RichText::new(format!("Listening on {}", self.session.loopback)).color(MUTED),
+        );
+    }
+
+    /// Enumerate at most once a second, and only while the pane is open.
+    fn refresh_sources(&mut self) {
+        if self
+            .sources_read
+            .is_some_and(|t| t.elapsed() < Duration::from_secs(1))
+        {
+            return;
+        }
+        self.sources_read = Some(std::time::Instant::now());
+        let mut rows: Vec<(String, bool)> = crate::audio::playing(&self.session.loopback)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|name| (name, true))
+            .collect();
+        // A selected app that is not playing still belongs on the list, or
+        // turning it back off would mean typing a command to undo a click.
+        if let Some(tune) = &self.session.tune {
+            for chosen in tune.hearing() {
+                let known = rows
+                    .iter()
+                    .any(|(n, _)| n.to_lowercase().contains(&chosen.to_lowercase()));
+                if !known {
+                    rows.push((chosen, false));
+                }
+            }
+        }
+        self.sources = rows;
+    }
+
     fn status_line(&self) -> String {
         let mode = if self.session.preview {
             Mode::Preview
@@ -709,6 +816,7 @@ impl State {
                     ui.label(RichText::new("IMPORT ACTIVITY").color(ACCENT).strong());
                     ui.label(RichText::new(joined(&self.imports)).color(MUTED));
                 }
+                SOURCES => self.sources_pane(ui),
                 DIAGNOSTICS => {
                     ui.label(RichText::new(joined(&self.diagnostics)).color(MUTED));
                 }
@@ -865,6 +973,13 @@ impl State {
             "question": self.question,
             "references": self.session.references.preview(),
             "imports": self.imports.len(),
+            // The picker's two halves: what it offers and what is selected.
+            // A row that is listed but never selectable, or a selection with no
+            // row, is the failure this makes visible to a script.
+            "sources": self.sources.iter().map(|(n, live)| {
+                serde_json::json!({ "name": n, "playing": live })
+            }).collect::<Vec<_>>(),
+            "hearing": self.session.tune.as_ref().map(|t| t.hearing()).unwrap_or_default(),
         })
         .to_string();
         if *last != now {
@@ -1092,6 +1207,8 @@ pub fn run(
                 focus_question: false,
                 view: ADVICE,
                 paused: false,
+                sources: Vec::new(),
+                sources_read: None,
                 // `route` sends the real value before the first turn; assuming
                 // armed here only means the status line is never briefly wrong
                 // in the direction that would make a muted coach look broken.
@@ -1272,10 +1389,17 @@ mod tests {
         // reachable *somehow* — an action with neither a key nor a command is
         // dead code no user can run.
         assert!(!ids.contains(&CLEAR), "F10 belongs to the advice toggle now");
-        assert!(
-            COMMANDS.iter().any(|(c, _)| *c == "/clear"),
-            "clearing references lost its key and must keep its command"
-        );
+        for (id, gone, command) in [
+            (CLEAR, "F10", "/clear"),
+            (DIAGNOSTICS, "F4", "/diagnostics"),
+        ] {
+            assert!(!ids.contains(&id), "{gone} belongs to another action now");
+            assert!(
+                COMMANDS.iter().any(|(c, _)| *c == command),
+                "{command} lost its key and must keep its command"
+            );
+        }
+        assert!(ids.contains(&SOURCES), "the picker needs a key of its own");
         assert!(ids.contains(&COACH));
     }
     #[test]

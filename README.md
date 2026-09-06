@@ -94,7 +94,7 @@ answer it; it grows to at least the last eight turns and scrolls for more.
 | Ctrl+Shift+F1 | Advice |
 | Ctrl+Shift+F2 | Whole conversation |
 | Ctrl+Shift+F3 | References |
-| Ctrl+Shift+F4 | Diagnostics |
+| Ctrl+Shift+F4 | Choose what it listens to |
 | Ctrl+Shift+F5 | Pause / resume transcription |
 | Ctrl+Shift+F6 | Hide / show the panel |
 | Ctrl+Shift+F7 | Type a question (Enter sends, Esc cancels) |
@@ -284,7 +284,18 @@ down; `/coach off` keeps the record and only stops the unbidden advice.
 
 ### Changing what it hears, mid-run
 
-Press Ctrl+Shift+F7 for the question box and type a `/hear` command.
+**Ctrl+Shift+F4 opens the picker.** It lists every app playing on the loopback
+device, with the whole speaker mix as the first row. Click a row to hear it;
+click more to hear several at once; click it again to turn it off. The change
+lands within two seconds — no restart. Clicking needs no focus, so your call
+app keeps the keyboard throughout.
+
+An app you have selected that is not currently making a sound stays on the list
+marked `— not playing`, so you can always click it back off.
+
+The one thing a list cannot do is name an app that has not started yet — it has
+no audio session to appear in. For that, type it: Ctrl+Shift+F7, then a `/hear`
+command.
 
 | Typed | Effect |
 | --- | --- |

@@ -262,12 +262,21 @@ Traps here, each already paid for once (see LEDGER):
   both. A command is handled by whoever owns the state it changes: `/hear` in
   `route` (it writes `Tune`), `/clear` in the panel (it also empties the
   panel's import list, which `route` cannot reach).
-- **The app selector is a typed command, not a control.** `/hear` is parsed in
-  `route()`'s `Msg::Question` arm because F7's box is the only place in a
-  no-controls panel where a name can be typed — and unlike a picker of what is
-  playing, a typed name can register an app that has not started yet, which is
-  what `sessions()` can never list. Bare `/hear` reports rather than clears: a
-  user checking the selection should not risk dropping the far end.
+- **The app selector is a clickable pane *and* a typed command, and both earn
+  their place.** The Sources pane (Ctrl+Shift+F4, `SOURCES`) lists what
+  `audio::playing` finds on the loopback device and toggles a row with
+  `Tune::toggle`. It is a control, and the no-controls rule survives it intact
+  for the reason the rule exists: that rule is about *focus*, and a
+  `WS_EX_NOACTIVATE` window still receives mouse input — which is how dragging
+  has always worked — so clicking a row never takes the keyboard from the app
+  being listened to. `/hear` stays because a list can only offer apps with a
+  live audio session, and naming an app *before* it starts is the case the
+  reacquire loop was built for. Bare `/hear` reports rather than clears: a user
+  checking the selection should not risk dropping the far end.
+  The pane enumerates at most once a second and only while it is open — COM
+  work on the render loop for a pane nobody is looking at is pure waste — and
+  it opens the device by *name* on the main thread, which `main` has already put
+  in MTA, because a `Device` cannot be sent to it.
 - **A process-loopback stream whose app exits delivers silence, not an error.**
   `audio::pump` therefore polls `alive(pid)` every 2 s and bails, which is what
   lets `run`'s reacquire loop hook the app again under its new pid. Do not
