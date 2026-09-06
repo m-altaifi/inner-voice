@@ -8,6 +8,7 @@ logs/
 .env
 models/*.onnx
 clips/
+references/
 dist/
 *.out
 *.err

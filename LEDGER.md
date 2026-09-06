@@ -7,6 +7,20 @@ Update the **Now** block after every work session. Nothing else here is chronolo
 
 ## Now
 
+**Wave 2 — memory (2026-09-06):** `extract.rs` is the one loader (txt/md/csv/
+sheets/PDF/DOCX/OCR); `knowledge::Corpus` re-reads the folder before each
+coach request when its newest mtime moves and pushes the new prompt to the
+coach and the new glossary to whisper through `RwLock`s; references live in
+`references/`, drops are remembered by path in `.dropped`, `(path, mtime)` is a
+document's identity so an edit replaces its passages. The CLI research lane's
+default adapter is Claude Code's `claude.exe` with settings/hooks/MCP off and
+read-only tools, pinned to a captured `stream-json` run: 6.5 K cache tokens
+and ~5 s per press versus 37 K / $0.75 through the interactive harness;
+`--bare` drops the subscription login. Codex stays unverified. Known gaps: the
+roster (attendees.csv name bindings) is still read only at startup, so a reload
+notice overstates what refreshed; a remembered drop whose file is gone is
+reported once per launch until Clear references.
+
 **Wave 1 — glance & hearing (2026-09-06):** Decision 7 back in egui (`Tag` for
 the colours, `status_text` for the wait as a number, TTFT timing), all unit
 tested and the instrument asserted by `ui_smoke.ps1`.

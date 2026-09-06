@@ -67,7 +67,9 @@ has focus to answer Ctrl+C. Ctrl+Shift+F12 pins, freezing move and resize both.
   position assertion silently measuring the stuck drag instead of itself. The
   panel therefore mirrors `dragging`, and the script waits for it to clear
   before trusting any window position. `dragged()` has the geometry and tests.
-`references.rs` owns session-only imports and local passage retrieval.
+`references.rs` owns the references folder, the manifest of dropped paths, and
+local passage retrieval; `extract.rs` is the one path→text loader both it and
+`knowledge.rs` use.
 `--preview` opens the real interface with sample conversation and no
 audio/network (its research keys are not registered). `tools/ui_smoke.ps1` checks
 this preview only, and needs `IV_UI_DUMP` set to a path before launch: no child
@@ -87,7 +89,8 @@ captured just before the pause still lands. Do not describe pause as a hard
 barrier past the audio worker.
 
 Current additions (2026-09-05): `history.rs` owns the typed 24-turn context.
-`agent.rs` runs optional hotkey-triggered Codex research; `process.rs` contains
+`agent.rs` runs optional hotkey-triggered CLI research — the adapter follows the
+`--agent-cmd` file stem, `claude` or Codex; `process.rs` contains
 hidden subprocesses with Job Objects, cancellation, deadlines, and output caps.
 `search.rs` uses bounded Everything UTF-8 exports. Research completions and coach
 messages go through the router for logging. The coach now owns one HTTP worker
@@ -239,7 +242,8 @@ Traps here, each already paid for once (see LEDGER):
   the coaching provider by default (`Coach::research`) and that lane *has* been
   run live against Gemini; `--agent-cmd` switches to the CLI, and the router
   keeps exactly one lane live per session. So the risk is now confined to
-  `agent.rs`, not to the feature.
+  `agent.rs`'s Codex adapter, not to the feature — the `claude` adapter beside
+  it is pinned to a captured run (`tests/fixtures/claude-stream.jsonl`).
 - **Every `AdviceStart` must get an `AdviceEnd`.** `ask` supersedes by announcing
   a *newer* generation, so the panel moves on by itself; `cancel` has no
   successor and must close the generation it retires, or the panel sits on
@@ -248,6 +252,11 @@ Traps here, each already paid for once (see LEDGER):
   the cancel. `Coach::cancel` therefore emits the terminal message, and both
   consumers (`route`, `hud`) ignore a repeat rather than logging or speaking it
   twice. `coach.rs`'s `cancelling_closes_the_generation_it_retired` guards this.
+- **`claude -p` costs depend entirely on what it loads.** The interactive
+  harness (hooks, plugins, MCP, CLAUDE.md dirs) is 37 K cache tokens per call;
+  `--strict-mcp-config --setting-sources ""` is 6.5 K and keeps the login.
+  `--bare` drops the login. `result.subtype` is "success" even on failure —
+  `is_error` is the signal. All measured; the fixture is the proof.
 
 ### Providers
 
@@ -262,8 +271,10 @@ Providers whose model ids churn (openai, gemini, openrouter) deliberately carry
 
 ### Knowledge corpus
 
-`knowledge/` (`.md .txt .csv .xlsx .xlsm .xls .ods`) is loaded once at startup and
-pinned into the system prompt behind an Anthropic cache breakpoint. No retrieval,
+`knowledge/` (`.md .txt .csv .xlsx .xlsm .xls .ods .pdf .docx` and images) is
+loaded at startup, pinned into the system prompt behind an Anthropic cache
+breakpoint, and re-read by `route()` before each coach request whenever the
+folder's newest mtime moves (`knowledge::Corpus`). No retrieval,
 no chunking, no embeddings — deliberate, and capped at 400 KB. Files are sorted so
 the cached prompt prefix stays stable; do not change that ordering casually.
 

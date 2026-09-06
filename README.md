@@ -38,9 +38,14 @@ limits, and billing depend on the provider. The Anthropic wire retains fast-mode
 settings and needs a compatible model/account. See `.env.example` for keys.
 
 Edit `prompt.md` for the persona. Suggestions use `ASK`, `SAY`, `NOTE`, and `FIX`.
-Put call briefs in `knowledge/`: Markdown, text, CSV, XLSX, XLSM, XLS, and ODS are
-supported. Replace sample company and attendee facts with your own. Knowledge
-loads once at startup, sorted, capped at 400 KB with a truncation marker.
+Put call briefs in `knowledge/`: Markdown, text, CSV, spreadsheets
+(XLSX/XLSM/XLS/ODS), PDF, Word (.docx) and images (read by Windows OCR) are
+supported. A file in `knowledge/` that cannot be read — corrupt, a scanned PDF
+with no text layer, an image with no recognisable text — stops startup with its
+name; fix or remove it. An empty file is skipped. Replace sample company and
+attendee facts with your own. Knowledge is read at startup and re-read before the
+next advice whenever a file in the folder changes, so an edit mid-call reaches
+the coach; sorted, capped at 400 KB with a truncation marker.
 Its glossary also primes Whisper. The latest 24 speech/research turns form the
 coaching context; JSONL retains speech, completed advice, and research results.
 
@@ -110,11 +115,15 @@ Try the interface without a model, microphone, or provider connection:
 .\target\release\inner-voice.exe --preview
 ```
 
-Drag TXT, Markdown, CSV, XLSX, XLSM, XLS, or ODS files into the window. Imports
-run in the background, with reading/ready/error feedback and duplicate detection.
-Files stay in memory for the current session. Limits: 24 files, 10 MB per file,
-400 KB extracted text per file. Clear references removes indexed content without
-changing original files; it does not retract excerpts already sent or logged.
+Drag any supported file into the window — TXT, Markdown, CSV, spreadsheets,
+PDF (text layer; scanned pages need OCR first), Word (.docx), or images, which
+Windows OCR reads if a language with OCR is installed. Files in `references/`
+(`--references` / `IV_REFERENCES`) are imported at every start; a file dropped
+from elsewhere is remembered by its path in `references/.dropped` and re-read
+next start — never copied, so editing the original is enough. An edited file is
+re-read before the next retrieval. Limits: 24 files, 10 MB per file, 400 KB
+extracted text per file. Clear references empties the index and the remembered
+paths; files in the folder return next launch.
 
 Relevant passages are selected through local word matching, with filename and
 passage citations. Questions work locally in preview/transcription mode; online
@@ -122,8 +131,8 @@ coaching also retrieves passages for the latest remote turn. Before adding files
 in online mode, the interface explains that selected excerpts may go to the
 provider and asks you to confirm. Unrelated passages are not automatically sent.
 
-PDF, Word, and image/OCR import, persistent libraries, and guided setup are still
-planned; unsupported files receive an explicit error. This is not semantic search.
+Guided setup is still planned; unsupported files receive an explicit error.
+This is not semantic search.
 
 Ctrl+Shift+F8 opens the research view. From any other view it just brings the
 last result back up; pressing it again while that result is already on screen
@@ -139,19 +148,30 @@ file is in the launch directory, otherwise under a built-in prompt
 (`--research-prompt`, `IV_RESEARCH_PROMPT`; `--research-prompt` resolves on its
 own, not relative to `--prompt`).
 
-Setting `--agent-cmd` switches research to a Codex CLI instead; the CLI wins
-wherever it is configured, so exactly one lane is live per session. To use it,
-install/authenticate Codex CLI, then configure its actual executable:
+Setting `--agent-cmd` switches research to a CLI (Claude Code or Codex) instead;
+the CLI wins wherever it is configured, so exactly one lane is live per session.
+To use it, install/authenticate the CLI, then configure its actual executable:
 
 ```powershell
-.\target\release\inner-voice.exe --agent-cmd 'C:\path\to\codex.exe' --agent-root knowledge
+.\target\release\inner-voice.exe --agent-cmd "$env:APPDATA\npm\node_modules\@anthropic-ai\claude-code\bin\claude.exe"
 ```
 
-The adapter uses `codex exec --json`, read-only sandbox, no automatic approvals,
-ignored user configuration/rules, and ephemeral sessions. It requires a CLI
-supporting those flags (`codex exec --help`). Transcript text goes through stdin,
-never a shell. Hidden processes belong to a Windows Job Object; deadlines
-(90 seconds by default, applied to the Codex child), cancellation, and app exit
+Claude Code's own binary works as that CLI on a subscription — no API key —
+at `%APPDATA%\npm\node_modules\@anthropic-ai\claude-code\bin\claude.exe`
+(the `claude` on PATH is a shim). It runs with settings, hooks and MCP servers
+off and read-only tools only, and reads `knowledge/` and `references/` live
+from disk. Its output format is pinned to a captured run
+(`tests/fixtures/claude-stream.jsonl`). Codex remains supported but unverified.
+The default root is the app folder, which holds `.env`: the tools are read-only
+and the prompt points the CLI at `knowledge/` and `references/`, but nothing
+stops it opening other files there — point `--agent-root` elsewhere if that
+matters to you.
+
+The Codex adapter uses `codex exec --json`, read-only sandbox, no automatic
+approvals, ignored user configuration/rules, and ephemeral sessions. It requires
+a CLI supporting those flags (`codex exec --help`). Transcript text goes through
+stdin, never a shell. Hidden processes belong to a Windows Job Object; deadlines
+(90 seconds by default, applied to the CLI child), cancellation, and app exit
 terminate the process tree. Each output stream is truncated at 1 MB rather than
 failing the job. Only one research job runs at a time.
 
@@ -162,15 +182,15 @@ speech and stays available to later coaching turns, truncated to 2,000 character
 so it cannot crowd real speech out of the 24-turn window. A failed job is shown
 and logged but never enters that window.
 
-The *CLI* lane has not yet been exercised against a real Codex CLI, so treat its
-event parsing as unverified: if it returns "no answer", the error quotes the first
-line the CLI produced, which is the thing to report. The HTTP lane has been run
-live against Gemini.
+The *Codex* adapter has not yet been exercised against a real Codex CLI, so treat
+its event parsing as unverified: if it returns "no answer", the error quotes the
+first line the CLI produced, which is the thing to report. The HTTP lane has been
+run live against Gemini.
 
 Research needs a provider or a CLI, so `--provider none` with neither leaves it
 off. Speech never triggers it; the fast coach has no tools. This release supports
-Codex as the CLI adapter. Historical Claude/OpenCode adapters in the ledger
-remain future alternatives.
+Claude Code and Codex as CLI adapters. The historical OpenCode adapter in the
+ledger remains a future alternative.
 
 ## File search
 
@@ -232,8 +252,9 @@ calls; collect `--dump clips` audio before tuning them.
 
 Coaching sends transcript and knowledge to the provider. Audio stays local.
 Logs default to `logs/`; `IV_LOG=` disables them. Audio dumps are opt-in.
-`.env`, logs, models, and `clips/` are gitignored; custom dump directories need
-their own ignore rule. Keep call material private and obtain consent as required.
+`.env`, logs, models, `clips/` and `references/` are gitignored; custom dump
+directories need their own ignore rule. Keep call material private and obtain
+consent as required.
 
 ## Verification
 
