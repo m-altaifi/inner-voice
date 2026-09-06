@@ -112,14 +112,14 @@ impl Drop for Coach {
 /// Request body per wire. Anthropic gets the latency knobs; the OpenAI shape is
 /// deliberately plain, because every vendor speaking it supports a slightly
 /// different set of extras and none are worth the breakage.
-fn body(p: &Provider, prompt: &str, transcript: &str) -> Value {
+fn body(p: &Provider, prompt: &str, transcript: &str, max_tokens: u32) -> Value {
     match p.wire {
         // Two system blocks: persona plus taught corpus are identical every turn,
         // so they sit behind a cache breakpoint and are not resent. The
         // transcript changes every turn and stays in `messages` after it.
         Wire::Anthropic => json!({
             "model": p.model,
-            "max_tokens": MAX_TOKENS,
+            "max_tokens": max_tokens,
             "stream": true,
             "speed": "fast",
             "fallbacks": "default",
@@ -130,7 +130,7 @@ fn body(p: &Provider, prompt: &str, transcript: &str) -> Value {
         }),
         Wire::OpenAi => json!({
             "model": p.model,
-            "max_tokens": MAX_TOKENS,
+            "max_tokens": max_tokens,
             "stream": true,
             "messages": [
                 {"role": "system", "content": prompt},
@@ -156,6 +156,36 @@ fn delta(wire: Wire, v: &Value) -> Option<String> {
     }
 }
 
+/// One streamed request. Deltas go to `sink`; the return says whether the
+/// stream ran to its completion marker (`false` means a newer generation
+/// superseded it and the socket was abandoned).
+///
+/// Shared by both lanes: the advice lane turns deltas into `Msg::Advice`, the
+/// research lane accumulates them and reports once at the end.
+#[allow(clippy::too_many_arguments)]
+fn request(
+    agent: &ureq::Agent,
+    p: &Provider,
+    system: &str,
+    user: &str,
+    max_tokens: u32,
+    seq: u64,
+    live: &AtomicU64,
+    sink: &mut dyn FnMut(String) -> Result<()>,
+) -> Result<bool> {
+    let req = agent.post(p.url).header("content-type", "application/json");
+    let req = match p.wire {
+        Wire::Anthropic => req
+            .header("x-api-key", &p.key)
+            .header("anthropic-version", "2023-06-01")
+            .header("anthropic-beta", BETAS),
+        Wire::OpenAi => req.header("authorization", &format!("Bearer {}", p.key)),
+    };
+    let resp = req.send_json(body(p, system, user, max_tokens))?;
+    let reader = BufReader::new(resp.into_body().into_reader());
+    consume(reader, p.wire, seq, live, sink)
+}
+
 fn stream(
     agent: &ureq::Agent,
     p: &Provider,
@@ -165,17 +195,20 @@ fn stream(
     live: &AtomicU64,
     tx: &Sender<Msg>,
 ) -> Result<()> {
-    let req = agent.post(p.url).header("content-type", "application/json");
-    let req = match p.wire {
-        Wire::Anthropic => req
-            .header("x-api-key", &p.key)
-            .header("anthropic-version", "2023-06-01")
-            .header("anthropic-beta", BETAS),
-        Wire::OpenAi => req.header("authorization", &format!("Bearer {}", p.key)),
-    };
-    let resp = req.send_json(body(p, prompt, transcript))?;
-    let reader = BufReader::new(resp.into_body().into_reader());
-    consume(reader, p.wire, seq, live, tx)
+    let done = request(
+        agent,
+        p,
+        prompt,
+        transcript,
+        MAX_TOKENS,
+        seq,
+        live,
+        &mut |text| Ok(tx.send(Msg::Advice(seq, text))?),
+    )?;
+    if done {
+        tx.send(Msg::AdviceEnd(seq))?;
+    }
+    Ok(())
 }
 
 fn consume(
@@ -183,8 +216,8 @@ fn consume(
     wire: Wire,
     seq: u64,
     live: &AtomicU64,
-    tx: &Sender<Msg>,
-) -> Result<()> {
+    sink: &mut dyn FnMut(String) -> Result<()>,
+) -> Result<bool> {
     // `done` rather than `break`: ureq only returns a connection to the pool
     // when the body is read to its end, and re-probes the socket to be sure. So
     // breaking on the terminator left the trailing bytes unread and silently
@@ -197,7 +230,7 @@ fn consume(
         if live.load(Ordering::SeqCst) != seq {
             // They said something newer. Abandon the socket rather than draining
             // a stream that is still generating — this one is worth closing.
-            return Ok(());
+            return Ok(false);
         }
         let mut line = String::new();
         let bytes = reader.by_ref().take(65_537).read_line(&mut line)?;
@@ -238,7 +271,7 @@ fn consume(
             if output_bytes > 65_536 {
                 bail!("provider response exceeds 64 KB");
             }
-            tx.send(Msg::Advice(seq, text))?;
+            sink(text)?;
         }
         if v["type"] == "message_stop" {
             done = true; // Anthropic wire terminator
@@ -250,23 +283,31 @@ fn consume(
     if output_bytes == 0 {
         bail!("provider returned no advice");
     }
-    tx.send(Msg::AdviceEnd(seq))?;
-    Ok(())
+    Ok(true)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// Drive `consume` the way the advice lane does: deltas become `Advice`,
+    /// completion becomes `AdviceEnd`, supersession becomes nothing.
     fn read_sse(data: &str) -> (Result<()>, Vec<Msg>) {
         let (tx, rx) = crossbeam_channel::unbounded();
+        let live = AtomicU64::new(1);
         let result = consume(
             std::io::Cursor::new(data),
             Wire::OpenAi,
             1,
-            &AtomicU64::new(1),
-            &tx,
-        );
+            &live,
+            &mut |t| Ok(tx.send(Msg::Advice(1, t))?),
+        )
+        .and_then(|done| {
+            if done {
+                tx.send(Msg::AdviceEnd(1))?;
+            }
+            Ok(())
+        });
         (result, rx.try_iter().collect())
     }
 
@@ -332,16 +373,20 @@ mod tests {
 
     #[test]
     fn superseded_stream_does_not_emit_advice() {
-        let (tx, rx) = crossbeam_channel::unbounded();
-        consume(
+        let mut seen = Vec::new();
+        let done = consume(
             std::io::Cursor::new("data: [DONE]\n\n"),
             Wire::OpenAi,
             1,
             &AtomicU64::new(2),
-            &tx,
+            &mut |t| {
+                seen.push(t);
+                Ok(())
+            },
         )
         .unwrap();
-        assert!(rx.is_empty());
+        assert!(!done, "a superseded stream reports it did not complete");
+        assert!(seen.is_empty());
     }
 
     fn p(wire: Wire) -> Provider {
@@ -421,12 +466,14 @@ mod tests {
 
     #[test]
     fn openai_body_omits_anthropic_only_knobs() {
-        let b = body(&p(Wire::OpenAi), "sys", "hello");
+        let b = body(&p(Wire::OpenAi), "sys", "hello", MAX_TOKENS);
         assert!(b["speed"].is_null() && b["output_config"].is_null());
         assert_eq!(b["messages"][0]["role"], "system");
 
-        let b = body(&p(Wire::Anthropic), "sys", "hello");
+        let b = body(&p(Wire::Anthropic), "sys", "hello", MAX_TOKENS);
         assert_eq!(b["speed"], "fast");
         assert_eq!(b["system"][0]["cache_control"]["type"], "ephemeral");
+
+        assert_eq!(body(&p(Wire::OpenAi), "s", "u", 2_000)["max_tokens"], 2_000);
     }
 }

@@ -15,6 +15,7 @@ pub enum Wire {
     OpenAi,
 }
 
+#[derive(Clone)]
 pub struct Provider {
     pub url: &'static str,
     pub model: String,
