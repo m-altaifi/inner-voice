@@ -9,6 +9,10 @@ logs/
 models/*.onnx
 clips/
 references/
+# Your briefing material, not the project's. knowledge/README.md says why the
+# sample corpus that used to live here was a bug rather than a convenience.
+knowledge/*
+!knowledge/.gitkeep
 dist/
 *.out
 *.err

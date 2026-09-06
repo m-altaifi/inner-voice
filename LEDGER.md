@@ -7,6 +7,55 @@ Update the **Now** block after every work session. Nothing else here is chronolo
 
 ## Now
 
+**"wtf is sarah chen" (2026-09-06):** this project shipped a sample corpus in
+`knowledge/` — `attendees.csv` naming Sarah Chen (Platform Lead) and Marcus Webb
+(CTO), a `facts.csv` with a headcount of 42, a `company.md`. Placeholder text by
+intent. Every real run loaded it, and six log files across earlier sessions carry
+"Sarah Chen" — nine occurrences — as a *speaker*.
+
+It is not a cosmetic default, because the folder feeds three consumers and
+invented people break all three:
+
+1. the coach is told the corpus is source of truth, so it advises around a
+   roster that does not exist;
+2. `knowledge::glossary` puts the proper nouns into whisper's `initial_prompt`,
+   which **primes the transcriber to hear them** — garbled audio comes back
+   spelling "Sarah Chen";
+3. `roster.rs` reads `attendees.csv` from the same folder and binds the heard
+   name to the far-end voice cluster for the rest of the call, relabelling every
+   later turn in the panel and the JSONL.
+
+An invented fact that is only ever read is a curiosity. This one is fed back into
+the transcriber that produces the evidence, so it manufactures its own
+confirmation — which is why it looked random from the outside and why the
+2026-09-06 wave-1 report found it as a `--hear` defect before tracing it here.
+
+Fixed by deletion, not by better sample data: `knowledge/` is now git-ignored
+apart from `.gitkeep`, and the folder documentation lives in README rather than
+in the folder — a README in there *is* corpus, and the first draft of it named
+Sarah Chen, so it primed whisper on the very run that was meant to prove the
+fix. Caught by `--setup` reporting `1 files`.
+
+Two things now make the mechanism visible instead of relying on nobody repeating
+it. `Roster::names` puts the loaded roster in the startup notice — `naming: Ada
+Lovelace, Grace Hopper` rather than the old `naming: on` — so a name arriving
+mid-call is traceable to a file the user has seen; `naming:` was added to the
+notice-line filter, since Diagnostics-only would have kept it invisible. And
+`--setup` gained a `priming` check that prints the first six glossary terms:
+`whisper is biased toward: Ada Lovelace, Platform Lead, Grace Hopper, CTO`, or
+`nothing — whisper hears only what is said`. A file count cannot show bias; the
+terms can. Verified both ways.
+
+Not fixed, and still needing real-call evidence: a *correct* roster can still
+bind a primed mishearing to the wrong voice. `prompt.md` holds that a wrong name
+is worse than no name, and the wave-1 finding on this belongs to the acceptance
+call along with `voiceid.rs:16`. Removing invented names removes the case that
+was firing every run; it does not remove the mechanism.
+
+Old logs still contain the fabricated speaker. Left alone — they are the user's
+record, and rewriting a transcript to remove a name it really contained is a
+worse habit than a footnote.
+
 **Twelve keys to six (2026-09-06):** "the options feel crowded and too much."
 Correct, and it was the accumulation pattern rather than any one decision: each
 key was argued for on its own merits and the set was never re-read as a whole,

@@ -71,11 +71,26 @@ Put call briefs in `knowledge/`: Markdown, text, CSV, spreadsheets
 (XLSX/XLSM/XLS/ODS), PDF, Word (.docx) and images (read by Windows OCR) are
 supported. A file in `knowledge/` that cannot be read — corrupt, a scanned PDF
 with no text layer, an image with no recognisable text — stops startup with its
-name; fix or remove it. An empty file is skipped. Replace sample company and
-attendee facts with your own. Knowledge is read at startup and re-read before the
-next advice whenever a file in the folder changes, so an edit mid-call reaches
-the coach; sorted, capped at 400 KB with a truncation marker.
-Its glossary also primes Whisper. The latest 24 speech/research turns form the
+name; fix or remove it. An empty file is skipped. Knowledge is read at startup
+and re-read before the next advice whenever a file in the folder changes, so an
+edit mid-call reaches the coach; sorted, capped at 400 KB with a truncation
+marker. Its glossary also primes Whisper.
+
+**`knowledge/` ships empty, and everything in it must be real.** Nothing in
+there is inert text — the folder feeds three consumers at once. The coach is
+told the corpus is *fact*. `knowledge::glossary` hands its proper nouns to
+Whisper's `initial_prompt`, which **primes the transcriber to hear those
+names**, so garbled audio comes back spelling them out. `attendees.csv` then
+lets a heard name bind to the far-end voice for the rest of the call, relabelling
+every later turn in the panel and the log.
+
+This project used to ship a sample corpus here — "Sarah Chen, Platform Lead",
+"Marcus Webb, CTO", a headcount of 42 — and every real run loaded it, so an
+invented name surfaced in real transcripts out of nowhere. An invented fact that
+is only ever *read* is a curiosity; one that is fed back into the transcriber
+producing the evidence manufactures its own confirmation. Put your own material
+here or leave it empty. `--setup` prints the first terms Whisper will be primed
+with, which is the fastest way to see what the folder is about to do. The latest 24 speech/research turns form the
 coaching context; JSONL retains speech, completed advice, and research results.
 
 ## Controls and research
@@ -358,7 +373,10 @@ curl.exe -fL -o models/campplus_sv_en_voxceleb_16k.onnx https://github.com/k2-fs
 ```
 
 Names come from `knowledge/attendees.csv` and introductions/direct address.
-Uncertain matches stay `THEM`. Thresholds (0.70/0.50) remain unvalidated on real
+Uncertain matches stay `THEM`. The startup notice reads `naming: <the roster>`,
+so a name appearing mid-call is always traceable to a file you put there — it
+used to say only `naming: on`. No `attendees.csv` means the far end stays
+`THEM`, which is the right answer for an unbriefed call. Thresholds (0.70/0.50) remain unvalidated on real
 calls; collect `--dump clips` audio before tuning them.
 
 Coaching sends transcript and knowledge to the provider. Audio stays local.

@@ -805,8 +805,14 @@ fn main() -> Result<()> {
     // than staying mysteriously anonymous all call.
     let voices = Some(std::path::PathBuf::from(&args.voices)).filter(|p| p.exists());
     let roster = roster::Roster::load(std::path::Path::new(&args.knowledge));
+    // The notice names the roster rather than saying "on". Whisper is primed
+    // with these names (`knowledge::glossary`), so it will occasionally *hear*
+    // one in garbled audio and `route` will bind it to the far-end voice — and
+    // an unexplained name in the transcript is exactly the kind of thing a user
+    // cannot debug from the outside. Naming them at startup makes the source
+    // obvious the moment it happens.
     let names_note = match (&voices, roster.is_empty()) {
-        (Some(_), false) => "naming: on".to_string(),
+        (Some(_), false) => format!("naming: {}", roster.names().join(", ")),
         (Some(_), true) => "naming: no attendees.csv, far end stays THEM".to_string(),
         (None, _) => format!("naming: no {}, far end stays THEM", args.voices),
     };

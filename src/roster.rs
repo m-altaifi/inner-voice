@@ -90,6 +90,16 @@ impl Roster {
         self.names.is_empty()
     }
 
+    /// Who the panel is prepared to call the far end, for the startup notice.
+    ///
+    /// `naming: on` used to be the whole message, which made a name arriving
+    /// mid-call unattributable to anything the user could see — and the sample
+    /// `attendees.csv` this project shipped meant the names were not even his.
+    /// A roster is a small list by nature, so it is printed rather than counted.
+    pub fn names(&self) -> &[String] {
+        &self.names
+    }
+
     /// Speaker naming themselves: "I'm Sarah", "Sarah here", "This is Marcus
     /// Webb", "my name is Sarah". Returns the roster's canonical spelling.
     pub fn self_intro(&self, text: &str) -> Option<&str> {

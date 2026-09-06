@@ -212,6 +212,7 @@ pub fn run(inputs: &Inputs, enumerator: &DeviceEnumerator) -> Vec<Check> {
     });
 
     checks.push(folder("knowledge", &inputs.knowledge, false));
+    checks.push(priming(&inputs.knowledge));
     checks.push(folder("references", &inputs.references, true));
 
     checks.push(match &inputs.agent_cmd {
@@ -239,6 +240,54 @@ pub fn run(inputs: &Inputs, enumerator: &DeviceEnumerator) -> Vec<Check> {
     });
 
     checks
+}
+
+/// What the corpus does to *whisper*, which its file count cannot show.
+///
+/// `knowledge::glossary` is pinned into `initial_prompt`, so every term here is
+/// a word the transcriber is biased toward hearing — and a bias is only visible
+/// in the output as a name that arrives from nowhere. A sample `attendees.csv`
+/// this project once shipped put an invented "Sarah Chen" into real transcripts
+/// exactly that way. Printing the terms before the call is the cheap version of
+/// finding out during one.
+fn priming(dir: &str) -> Check {
+    let terms = match crate::knowledge::load(Path::new(dir)) {
+        Ok(text) => crate::knowledge::glossary(&text),
+        // The same unreadable file that stops startup; `folder` counts bytes and
+        // would call it fine.
+        Err(e) => {
+            return Check {
+                name: "priming",
+                ok: false,
+                detail: format!("{dir} could not be read: {e}"),
+            };
+        }
+    };
+    let terms = terms
+        .trim_start_matches("Glossary: ")
+        .trim_end_matches('.')
+        .to_string();
+    Check {
+        name: "priming",
+        ok: true,
+        detail: if terms.is_empty() {
+            "nothing — whisper hears only what is said".into()
+        } else {
+            // Six is enough to recognise your own corpus and notice someone
+            // else's; the whole list can run to 800 characters.
+            let shown: Vec<&str> = terms.split(", ").take(6).collect();
+            let more = terms.split(", ").count().saturating_sub(shown.len());
+            format!(
+                "whisper is biased toward: {}{}",
+                shown.join(", "),
+                if more > 0 {
+                    format!(" (+{more} more)")
+                } else {
+                    String::new()
+                }
+            )
+        },
+    }
 }
 
 fn folder(name: &'static str, dir: &str, create: bool) -> Check {

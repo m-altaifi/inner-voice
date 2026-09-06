@@ -92,8 +92,9 @@ of the layout free to disagree with the screen. Screenshots cover the drawing.
 `Msg::Sys` lines are panel-only: they land in Diagnostics (`/diagnostics`) and are
 never written to the JSONL log — `route` records `COACH`, `RESEARCH` and turns
 and drops `Sys`. Of the `Sys` diagnostics only the prefixes `pump`'s filter
-admits reach the notice line (`hearing:`, `speak:`, `coach:`, `research off`,
-`Preview`, `knowledge`, and anything saying "failed" or "stopped"); reference status,
+admits reach the notice line (`hearing:`, `speak:`, `naming:`, `coach:`,
+`research off`, `Preview`, `knowledge`, and anything saying "failed" or
+"stopped"); reference status,
 research start/end, cleared references and the hotkey-clash note set `notice`
 directly and pass through no filter at all. Pause changes an audio epoch, and `audio.rs` discards queued
 and in-flight work from earlier epochs — but only up to `Msg::Turn`. A `Turn`
@@ -360,6 +361,23 @@ breakpoint, and re-read by `route()` before each coach request whenever the
 folder's newest mtime moves (`knowledge::Corpus`). No retrieval,
 no chunking, no embeddings — deliberate, and capped at 400 KB. Files are sorted so
 the cached prompt prefix stays stable; do not change that ordering casually.
+
+- **Never ship sample data in `knowledge/`, and never treat what is there as
+  inert text.** This project shipped `attendees.csv` naming "Sarah Chen" and
+  "Marcus Webb", plus a fake headcount, as placeholder material. Every real run
+  loaded them, and the folder feeds three consumers that each turn invented
+  people into a defect: the coach is told the corpus is *fact*;
+  `knowledge::glossary` puts the proper nouns in whisper's `initial_prompt`, so
+  the transcriber is **primed to hear those names** and returns them out of
+  garbled audio; and `roster.rs` then binds the heard name to the far-end voice
+  for the rest of the call, relabelling every later turn in the panel and the
+  JSONL log. The user's symptom was "wtf is Sarah Chen and why does it appear
+  randomly" — an invented name that is only ever *mentioned* stays a curiosity,
+  but this one is fed back into the transcriber that produces the evidence, so
+  it manufactures its own confirmation. The folder is now git-ignored apart from
+  its README, and `Roster::names` puts the loaded roster in the startup notice
+  (`naming: …`) rather than the old `naming: on`, so a name arriving mid-call is
+  always attributable to something the user has already seen.
 
 ### The prompt is coupled to the HUD
 
