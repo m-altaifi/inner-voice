@@ -454,6 +454,17 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         dir
     }
+    /// A real file behind a hand-built document. `stale()` stats every indexed
+    /// path and a path that is not there is stale, which now *evicts* the
+    /// document — so a synthetic `PathBuf::from("plan.txt")` is a race the
+    /// first retrieval loses as soon as the import worker gets to it.
+    fn on_disk(dir: &std::path::Path, name: &str, text: &str) -> (PathBuf, std::time::SystemTime) {
+        let path = dir.join(name);
+        std::fs::write(&path, text).unwrap();
+        let path = path.canonicalize().unwrap();
+        let modified = path.metadata().unwrap().modified().unwrap();
+        (path, modified)
+    }
     #[test]
     fn folder_files_and_remembered_drops_return_at_startup() {
         let dir = folder("startup");
@@ -545,13 +556,12 @@ mod tests {
         let refs = References::new(tx, None);
         // The `]` in the name proves the citation header is sanitised: a filename
         // must not be able to close the bracket the model reads as structure.
+        let first = "Rollback owner is Sarah. Recovery target is 20 minutes.";
+        let (path, modified) = on_disk(&folder("cites"), "laun]ch.txt", first);
         refs.library.write().unwrap().documents.push(Document::new(
-            PathBuf::from("laun]ch.txt"),
-            vec![
-                "Rollback owner is Sarah. Recovery target is 20 minutes.".into(),
-                "Holiday schedule follows.".into(),
-            ],
-            std::time::SystemTime::UNIX_EPOCH,
+            path,
+            vec![first.into(), "Holiday schedule follows.".into()],
+            modified,
         ));
         let result = refs.retrieve("Who owns rollback?");
         assert!(result.contains("[launch.txt, passage 1]"));
@@ -572,11 +582,14 @@ mod tests {
         let chunks: Vec<String> = (0..50)
             .map(|i| format!("rollback plan variant {i} {}", "x".repeat(2_500)))
             .collect();
-        refs.library.write().unwrap().documents.push(Document::new(
-            PathBuf::from("plan.txt"),
-            chunks,
-            std::time::SystemTime::UNIX_EPOCH,
-        ));
+        // Only the path and mtime are real; the passages stay synthetic because
+        // the cap arithmetic above depends on their exact size.
+        let (path, modified) = on_disk(&folder("deep"), "plan.txt", &chunks[0]);
+        refs.library
+            .write()
+            .unwrap()
+            .documents
+            .push(Document::new(path, chunks, modified));
         let shallow = refs.retrieve("rollback plan");
         let deep = refs.retrieve_deep("rollback plan");
         // The whole citation prefix, not "passage ": the banner above the
