@@ -562,7 +562,7 @@ fn main() -> Result<()> {
     let (ui_tx, ui_rx) = unbounded();
     let references = references::References::new(ui_tx.clone());
     let mute = Arc::new(AtomicBool::new(false));
-    let speaker = args.speak.then(|| speak::Speaker::new(mute.clone()));
+    let speaker = args.speak.then(|| speak::Speaker::new(Some(mute.clone())));
 
     // Empty rather than Option so `IV_LOG=` in .env switches it off without a
     // second flag to keep in sync.
