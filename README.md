@@ -121,15 +121,18 @@ Windows OCR reads if a language with OCR is installed. Files in `references/`
 (`--references` / `IV_REFERENCES`) are imported at every start; a file dropped
 from elsewhere is remembered by its path in `references/.dropped` and re-read
 next start — never copied, so editing the original is enough. An edited file is
-re-read before the next retrieval. Limits: 24 files, 10 MB per file, 400 KB
-extracted text per file. Clear references empties the index and the remembered
-paths; files in the folder return next launch.
+queued for re-reading at the next retrieval, so the one after it sees the new
+text. Limits: 24 files, 10 MB per file, 400 KB extracted text per file. Clear
+references empties the index and the remembered paths; files in the folder
+return next launch.
 
 Relevant passages are selected through local word matching, with filename and
 passage citations. Questions work locally in preview/transcription mode; online
-coaching also retrieves passages for the latest remote turn. Before adding files
-in online mode, the interface explains that selected excerpts may go to the
-provider and asks you to confirm. Unrelated passages are not automatically sent.
+coaching also retrieves passages for the latest remote turn. Before adding a
+dropped file in online mode, the interface explains that selected excerpts may
+go to the provider and asks you to confirm; files already in `references/` and
+the drops `.dropped` remembers are imported at start without that dialog.
+Unrelated passages are not automatically sent.
 
 Guided setup is still planned; unsupported files receive an explicit error.
 This is not semantic search.

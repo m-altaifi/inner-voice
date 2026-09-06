@@ -20,6 +20,18 @@ fn extension(path: &Path) -> String {
 /// Whether `text` would try to read this file at all. `knowledge/` skips the
 /// rest silently — a stray `.bak` in the folder is not an error.
 pub fn supported(path: &Path) -> bool {
+    // Office's lock file for an open document (`~$brief.docx`, hidden, ~160
+    // bytes) passes on extension alone and then fails to parse — which aborts
+    // startup, or makes `Corpus::refresh` return Err on every save for as long
+    // as Word holds the file. Guarded here because every folder scan
+    // (`knowledge::load`, `knowledge::count`, `references::import_folder`)
+    // routes through this predicate; `text` stays permissive for an explicit drop.
+    if path
+        .file_name()
+        .is_some_and(|n| n.to_string_lossy().starts_with("~$"))
+    {
+        return false;
+    }
     matches!(
         extension(path).as_str(),
         "txt"
@@ -96,6 +108,12 @@ fn pdf(path: &Path) -> Result<String> {
 /// `word/document.xml`, and the two crates that read those are already in the
 /// tree under calamine. Paragraphs become lines; inside a table, cells become
 /// tab-separated columns and rows become lines.
+///
+/// ponytail: text is taken from every element rather than gated on `w:t`, so a
+/// field code or a tracked deletion leaks into the output; gate on `w:t` (and
+/// skip `w:delText`) if a briefing ever reads wrong because of it.
+/// ponytail: only `word/document.xml` is read — headers, footers and footnotes
+/// are not; add their parts if a brief ever keeps facts there.
 fn docx(path: &Path) -> Result<String> {
     use quick_xml::events::Event;
     use std::io::Read as _;
@@ -110,7 +128,7 @@ fn docx(path: &Path) -> Result<String> {
     let mut out = String::new();
     let mut in_cell = 0usize;
     loop {
-        match reader.read_event()? {
+        match reader.read_event().context("reading DOCX XML")? {
             Event::Eof => break,
             Event::Text(t) => out.push_str(&t.decode()?),
             // 0.41 delivers `&amp;` and `&#8217;` as their own event, not inside
@@ -119,7 +137,11 @@ fn docx(path: &Path) -> Result<String> {
                 out.push_str(&quick_xml::escape::unescape(&format!("&{};", r.decode()?))?)
             }
             Event::Empty(e) if e.name().as_ref() == b"w:tab" => out.push('\t'),
-            Event::Empty(e) if e.name().as_ref() == b"w:br" => out.push('\n'),
+            // A line break inside a cell is still one cell: splitting there
+            // would break the row across lines and lose the column pairing.
+            Event::Empty(e) if e.name().as_ref() == b"w:br" => {
+                out.push(if in_cell > 0 { ' ' } else { '\n' })
+            }
             Event::Start(e) if e.name().as_ref() == b"w:tc" => in_cell += 1,
             Event::End(e) => match e.name().as_ref() {
                 // A paragraph inside a cell is still one cell: keep the row on one line.
@@ -152,13 +174,23 @@ fn ocr(path: &Path) -> Result<String> {
         Storage::{FileAccessMode, StorageFile},
         core::HSTRING,
     };
-    // `canonicalize` would yield a `\\?\` path, which StorageFile refuses.
-    let absolute = std::path::absolute(path)?;
+    // References hands over canonical paths (`load` canonicalises before
+    // reading) and `absolute` leaves a verbatim prefix untouched, so strip it
+    // here: StorageFile wants the Win32 form and answers `\\?\…` with
+    // ERROR_BAD_PATHNAME, which made every imported image fail.
+    let absolute = std::path::absolute(path)?.to_string_lossy().into_owned();
+    let absolute = match absolute.strip_prefix(r"\\?\UNC\") {
+        Some(share) => format!(r"\\{share}"),
+        None => absolute
+            .strip_prefix(r"\\?\")
+            .unwrap_or(&absolute)
+            .to_owned(),
+    };
     let engine = OcrEngine::TryCreateFromUserProfileLanguages().context(
         "no OCR language installed: Settings > Time & language > Language & region > \
          add a language, then its optional Optical character recognition feature",
     )?;
-    let file = StorageFile::GetFileFromPathAsync(&HSTRING::from(absolute.as_os_str()))?.join()?;
+    let file = StorageFile::GetFileFromPathAsync(&HSTRING::from(absolute.as_str()))?.join()?;
     let stream = file.OpenAsync(FileAccessMode::Read)?.join()?;
     let bitmap = BitmapDecoder::CreateAsync(&stream)?
         .join()?
@@ -176,7 +208,10 @@ fn ocr(path: &Path) -> Result<String> {
     Ok(out)
 }
 
-/// Whether an OCR engine can be created on this machine.
+/// Whether an OCR engine can be created on this machine. Activates WinRT, so
+/// like `ocr` it needs COM initialised on the calling thread — Wave 3's
+/// `--setup` must call it after `initialize_mta()`, or it reports "no OCR"
+/// on a machine that has one.
 // `--setup` (Wave 3) is the consumer; the allow goes with it.
 #[allow(dead_code)]
 pub fn ocr_available() -> bool {
@@ -259,6 +294,8 @@ mod tests {
             "the error names every accepted format: {err}"
         );
         assert!(supported(&txt) && supported(&csv) && !supported(&exe));
+        // Word's lock file for an open document: a `.docx` that is not one.
+        assert!(!supported(Path::new("~$brief.docx")));
     }
     /// A one-page PDF with a correct xref, built here so the test needs no
     /// external tool and no committed binary. Helvetica is a standard-14 font,
@@ -349,7 +386,12 @@ mod tests {
             eprintln!("skipping: no Windows OCR language installed");
             return;
         }
-        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/ocr.png");
+        // Canonicalised on purpose: `references::load` hands `text` a `\\?\`
+        // path, and that is the shape OCR has to survive.
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/ocr.png")
+            .canonicalize()
+            .unwrap();
         let out = text(&path).unwrap();
         assert!(out.contains("Sarah"), "{out:?}");
         assert!(supported(&path));

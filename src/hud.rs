@@ -546,7 +546,10 @@ impl State {
             CLEAR => {
                 self.session.references.clear();
                 self.imports.clear();
-                self.notice = "References cleared for this session.".into();
+                // Synchronous on the keypress: references.rs sends its longer
+                // sentence a frame later, and `ui_smoke.ps1` reads `cleared`
+                // straight after the press.
+                self.notice = "References cleared.".into();
             }
             // Typing is the one thing a hotkey cannot do for you, so the key
             // first brings the caret here and only sends once there is text.
@@ -820,9 +823,10 @@ impl State {
             .show(ctx, |ui| {
                 ui.set_max_width(420.0);
                 ui.label(
-                    "These files will be read locally for this session. Relevant excerpts may be \
-                     sent to your coaching or research provider when answering questions or \
-                     reacting to the call.",
+                    "These files are read locally and never copied; files in the references \
+                     folder, and drops remembered by path, return at every start. Relevant \
+                     excerpts may be sent to your coaching or research provider when answering \
+                     questions or reacting to the call.",
                 );
                 ui.add_space(10.0);
                 ui.horizontal(|ui| {

@@ -12,13 +12,13 @@ sheets/PDF/DOCX/OCR); `knowledge::Corpus` re-reads the folder before each
 coach request when its newest mtime moves and pushes the new prompt to the
 coach and the new glossary to whisper through `RwLock`s; references live in
 `references/`, drops are remembered by path in `.dropped`, `(path, mtime)` is a
-document's identity so an edit replaces its passages. The CLI research lane's
-default adapter is Claude Code's `claude.exe` with settings/hooks/MCP off and
-read-only tools, pinned to a captured `stream-json` run: 6.5 K cache tokens
-and ~5 s per press versus 37 K / $0.75 through the interactive harness;
-`--bare` drops the subscription login. Codex stays unverified. Known gaps: the
-roster (attendees.csv name bindings) is still read only at startup, so a reload
-notice overstates what refreshed; a remembered drop whose file is gone is
+document's identity so an edit replaces its passages. The default research lane
+is HTTP over the coaching provider; the CLI lane runs only with `--agent-cmd`,
+and speaks Claude Code's `claude.exe` when the executable's name says so —
+settings/hooks/MCP off, read-only tools, pinned to a captured `stream-json` run:
+6.5 K cache tokens and ~5 s per press versus 37 K / $0.75 through the
+interactive harness; `--bare` drops the subscription login. Codex stays
+unverified. Known gap: a remembered drop whose file is gone is
 reported once per launch until Clear references.
 
 **Wave 1 — glance & hearing (2026-09-06):** Decision 7 back in egui (`Tag` for
@@ -274,6 +274,8 @@ return local matches. Import consent precedes use with online providers. Limits,
 duplicates, unsupported formats, clear-during-import, and errors are explicit.
 PDF/DOCX/OCR, individual reference management, persistence, guided setup, and
 full DPI/Narrator validation remain outstanding; no claim of full UX completion.
+*PDF/DOCX/OCR and persistence: done in Wave 2 (2026-09-06); individual reference
+management, guided setup and DPI/Narrator validation still outstanding.*
 Native UI smoke checks cover navigation, pause controls, actual WM_DROPFILES,
 extraction, local retrieval, and clear. See tools/ui_smoke.ps1.
 
@@ -282,7 +284,9 @@ research through a read-only Codex executable, F9 result paging, F10 cancellatio
 and explicit bounded Everything filename search. Research uses hidden Windows
 Job Objects, stdin input, deadlines, and output limits; it is off by default.
 The Codex adapter replaces the proposed OpenCode default for this release;
-Claude/OpenCode adapters remain future alternatives. Everything integration is
+Claude/OpenCode adapters remain future alternatives.
+*The Claude adapter is done in Wave 2 (2026-09-06): `--agent-cmd claude.exe`
+picks it by file stem. OpenCode is still a future alternative.* Everything integration is
 implemented, but the indexer was not running during verification (IPC error 8).
 
 Fixed Unicode corpus truncation, conflicting name bindings, silent-endpoint

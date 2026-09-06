@@ -1,4 +1,6 @@
-//! Session-local document excerpts. Importing never executes a file or uses a network.
+//! A references folder that persists: what is in it, plus every drop from
+//! outside it remembered by path, is re-read at every start, and passages are
+//! retrieved by word match. Importing never executes a file or uses a network.
 use crate::Msg;
 use anyhow::{Context, Result, ensure};
 use crossbeam_channel::{Sender, TrySendError, bounded};
@@ -159,21 +161,30 @@ impl References {
                 break;
             }
             // Remembered by path, never copied: a copy is stale the moment the
-            // original is edited, and on-disk is the source of truth.
+            // original is edited, and on-disk is the source of truth. Only a
+            // file this app can read — remembering an unsupported drop, or a
+            // folder, buys a "Couldn't read" line at every launch until Clear.
             if let Some(folder) = &folder
+                && crate::extract::supported(&path)
                 && let Ok(canonical) = path.canonicalize()
                 && !canonical.starts_with(folder)
             {
                 let line = canonical.to_string_lossy().into_owned();
-                if !self.manifest().contains(&line) {
-                    let _ = std::fs::OpenOptions::new()
+                if !self.manifest().contains(&line)
+                    && let Err(e) = std::fs::OpenOptions::new()
                         .create(true)
                         .append(true)
                         .open(folder.join(".dropped"))
                         .and_then(|mut f| {
                             use std::io::Write as _;
                             writeln!(f, "{line}")
-                        });
+                        })
+                {
+                    // Swallowed, this file read fine today and was quietly gone
+                    // at the next launch — a read-only folder has to be said.
+                    let _ = self.tx.send(Msg::ReferenceStatus(format!(
+                        "Couldn't remember {name} in .dropped: {e}"
+                    )));
                 }
             }
             let _ = self
@@ -252,8 +263,14 @@ impl References {
         drop(library);
         // The manifest is the only part of a clear that outlives the session;
         // leaving it would bring the cleared drops back at the next launch.
-        if let Some(f) = self.folder() {
-            let _ = std::fs::write(f.join(".dropped"), "");
+        if let Some(f) = self.folder()
+            && let Err(e) = std::fs::write(f.join(".dropped"), "")
+        {
+            // A clear that did not clear must say so: the drops come back at the
+            // next launch and nothing on screen would have hinted why.
+            let _ = self.tx.send(Msg::ReferenceStatus(format!(
+                "Couldn't clear .dropped: {e}"
+            )));
         }
         let _ = self.tx.send(Msg::ReferenceStatus(
             "References cleared. Original files were not changed; files in the references folder return next launch."
@@ -443,6 +460,9 @@ mod tests {
         loop {
             let p = refs.preview();
             if f(&p) || std::time::Instant::now() > deadline {
+                // Returning the timed-out preview silently left the failure to
+                // whatever assertion came next, which then blamed the wrong thing.
+                assert!(f(&p), "timed out; last preview: {p}");
                 return p;
             }
             std::thread::sleep(std::time::Duration::from_millis(50));
@@ -549,6 +569,32 @@ mod tests {
         // Nothing left to retry, and a folder file is never remembered as a drop.
         assert!(refs.stale().is_empty());
         assert!(!dir.join(".dropped").exists());
+    }
+    /// End to end over the path shape `load` actually produces: a drop is
+    /// canonicalised to `\\?\…` before `extract::text` sees it, and WinRT's
+    /// StorageFile refuses that form — which made every imported image fail.
+    #[test]
+    fn an_image_dropped_as_a_reference_is_read_through_ocr() {
+        let _ = unsafe {
+            windows::Win32::System::Com::CoInitializeEx(
+                None,
+                windows::Win32::System::Com::COINIT_MULTITHREADED,
+            )
+        };
+        if !crate::extract::ocr_available() {
+            eprintln!("skipping: no Windows OCR language installed");
+            return;
+        }
+        let (tx, _) = crossbeam_channel::unbounded();
+        let refs = References::new(tx, None);
+        refs.import(vec![
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/ocr.png"),
+        ]);
+        let p = wait_until(&refs, |p| p.contains("ocr.png"));
+        assert!(
+            refs.retrieve("rollback owner").contains("Sarah"),
+            "preview: {p}"
+        );
     }
     #[test]
     fn retrieval_selects_evidence_and_cites_source() {

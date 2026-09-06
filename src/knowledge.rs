@@ -81,6 +81,11 @@ impl Corpus {
         })
     }
     /// Re-read if anything in the folder changed since the last read.
+    ///
+    /// ponytail: any change re-reads the whole folder — PDF parsing and OCR
+    /// included, synchronously on the router thread, on the turn after the
+    /// edit. A per-file cache keyed by (path, mtime) is the upgrade if a slow
+    /// format ever lands in `knowledge/`.
     pub fn refresh(&mut self) -> Result<bool> {
         let now = newest(&self.dir);
         if now == self.newest {
@@ -96,6 +101,11 @@ impl Corpus {
     }
     pub fn files(&self) -> usize {
         self.files
+    }
+    /// The folder it reads. `attendees.csv` lives there too, so a reload can
+    /// rebuild the roster from here rather than carrying a second path.
+    pub fn dir(&self) -> &Path {
+        &self.dir
     }
 }
 

@@ -289,8 +289,14 @@ struct ContextServices {
 
 /// Before anything goes to the coach: if the folder changed, the coach and
 /// whisper both learn it now, and the panel says so.
+///
+/// Runs on the router thread, which initialises no apartment of its own and
+/// does not need one: `main` put the process in an MTA, and windows-core's
+/// factory cache joins it (`CoIncrementMTAUsage` on `CO_E_NOTINITIALIZED`), so
+/// an image in `knowledge/` reaches `extract::ocr` from here.
 fn refresh_corpus(
     corpus: &mut knowledge::Corpus,
+    roster: &mut roster::Roster,
     persona: &str,
     coach: &Option<coach::Coach>,
     tune: &audio::Tune,
@@ -298,6 +304,10 @@ fn refresh_corpus(
 ) {
     match corpus.refresh() {
         Ok(true) => {
+            // `attendees.csv` is in the same folder, so Decision 9 covers it:
+            // read only at startup, a name added mid-call never binds and the
+            // "knowledge reloaded" notice overstates what actually refreshed.
+            *roster = roster::Roster::load(corpus.dir());
             if let Some(coach) = coach {
                 coach.set_prompt(build_prompt(persona, &corpus.text));
             }
@@ -322,7 +332,7 @@ fn route(
     coach: Option<coach::Coach>,
     min_words: usize,
     log: Option<log::Log>,
-    roster: roster::Roster,
+    mut roster: roster::Roster,
     services: ContextServices,
 ) {
     let ContextServices {
@@ -351,7 +361,7 @@ fn route(
                 continue;
             }
             Msg::Question(question) => {
-                refresh_corpus(&mut corpus, &persona, &coach, &tune, &tx);
+                refresh_corpus(&mut corpus, &mut roster, &persona, &coach, &tune, &tx);
                 if let Some(coach) = &coach {
                     coach.ask(format!(
                         "{}\n\nUser question: {}{}",
@@ -368,7 +378,7 @@ fn route(
             // for the whole session and the two id spaces never interleave on
             // the panel's single research slot.
             Msg::Research => {
-                refresh_corpus(&mut corpus, &persona, &coach, &tune, &tx);
+                refresh_corpus(&mut corpus, &mut roster, &persona, &coach, &tune, &tx);
                 let transcript = history.render();
                 if let Some(agent) = &agent {
                     agent.ask(format!("{transcript}{}", references.retrieve(&transcript)));
@@ -461,7 +471,7 @@ fn route(
                 who: who.clone(),
                 text: text.clone(),
             });
-            refresh_corpus(&mut corpus, &persona, &coach, &tune, &tx);
+            refresh_corpus(&mut corpus, &mut roster, &persona, &coach, &tune, &tx);
             if let Some(coach) = &coach
                 && who.is_them()
                 && text.split_whitespace().count() >= min_words

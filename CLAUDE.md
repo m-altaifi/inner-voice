@@ -80,7 +80,7 @@ of the layout free to disagree with the screen. Screenshots cover the drawing.
 never written to the JSONL log — `route` records `COACH`, `RESEARCH` and turns
 and drops `Sys`. Of the `Sys` diagnostics only the prefixes `pump`'s filter
 admits reach the notice line (`hearing:`, `speak:`, `coach:`, `research off`,
-`Preview`, and anything saying "failed" or "stopped"); reference status,
+`Preview`, `knowledge`, and anything saying "failed" or "stopped"); reference status,
 research start/end, cleared references and the hotkey-clash note set `notice`
 directly and pass through no filter at all. Pause changes an audio epoch, and `audio.rs` discards queued
 and in-flight work from earlier epochs — but only up to `Msg::Turn`. A `Turn`
@@ -160,6 +160,18 @@ retrieval step — is measured against this. `HANG_MS` now dominates.
 The budget is deliberately not spent down: whisper runs beam search and a full
 `audio_ctx` because accuracy is scarcer here than milliseconds. Don't "optimise"
 either back without real-call evidence.
+
+Two sweeps now run on the router thread ahead of every `coach.ask`, both
+microseconds in the normal case and both with a named tail.
+`references::retrieve` calls `stale()`, one stat per indexed file (24 at most) —
+but a *remembered* drop on a mapped drive that has gone away stats a dead
+network path, and the turn waits out the SMB timeout; move the sweep into the
+import worker and read its last result if that ever bites. `Corpus::refresh`
+stats `knowledge/` and every entry in it, and on the turn *after* an edit
+re-reads the whole folder synchronously — PDF parsing and Windows OCR included,
+so an image brief is seconds, not microseconds; a per-file cache keyed by
+(path, mtime) is the upgrade there. Both notes are also `ponytail:` comments at
+the code.
 
 Traps here, each already paid for once (see LEDGER):
 
