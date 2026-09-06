@@ -12,12 +12,123 @@ use std::collections::VecDeque;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
-use wasapi::{DeviceEnumerator, Direction, SampleType, StreamMode, WaveFormat, initialize_mta};
+use wasapi::{
+    Device, DeviceEnumerator, Direction, SampleType, SessionState, StreamMode, WaveFormat,
+    initialize_mta,
+};
 use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperState};
 
 pub const RATE: usize = 16_000;
 pub const FRAME_MS: usize = 20;
 pub const FRAME: usize = RATE * FRAME_MS / 1000;
+
+// The `allow(dead_code)` on the four items below: Tasks 7 and 9 wire `--hear`
+// and `--list-apps` to them; delete the allows then. Per item rather than a
+// module-wide one, so they come off with that wiring instead of hiding real rot
+// in `audio.rs` forever.
+/// One app with an audio session on the loopback endpoint.
+#[allow(dead_code)]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AppSession {
+    pub pid: u32,
+    /// At least one of its streams is running right now.
+    pub active: bool,
+    /// The session's display name, else the executable's stem. Most apps set
+    /// no display name, so it is usually the stem — `Discord`, `chrome`.
+    pub name: String,
+}
+
+/// Every app with a session on `dev`, system sounds excluded.
+#[allow(dead_code)]
+pub fn sessions(dev: &Device) -> Result<Vec<AppSession>> {
+    let list = dev
+        .get_iaudiosessionmanager()?
+        .get_audiosessionenumerator()?;
+    let mut out = Vec::new();
+    for i in 0..list.get_count()? {
+        let session = list.get_session(i)?;
+        let pid = session.get_process_id()?;
+        if pid == 0 {
+            continue; // the system-sounds session has no process
+        }
+        let mut name = session.get_display_name().unwrap_or_default();
+        if name.is_empty() {
+            name = image_stem(pid).unwrap_or_default();
+        }
+        if name.is_empty() {
+            continue;
+        }
+        let active = matches!(session.get_state()?, SessionState::Active);
+        out.push(AppSession { pid, active, name });
+    }
+    Ok(out)
+}
+
+/// Which session `--hear <name>` means: case-insensitive substring on the
+/// name, an active session over a silent one, else the first listed.
+#[allow(dead_code)]
+pub fn resolve(sessions: &[AppSession], wanted: &str) -> Option<u32> {
+    let wanted = wanted.to_lowercase();
+    let matching: Vec<&AppSession> = sessions
+        .iter()
+        .filter(|s| s.name.to_lowercase().contains(&wanted))
+        .collect();
+    matching
+        .iter()
+        .find(|s| s.active)
+        .or(matching.first())
+        .map(|s| s.pid)
+}
+
+/// Whether `pid` is still running. A process-loopback stream whose target
+/// exits delivers silence, not an error, so this is how a closed app is
+/// noticed and re-acquired under its new pid.
+#[allow(dead_code)]
+pub fn alive(pid: u32) -> bool {
+    use windows::Win32::Foundation::{CloseHandle, STILL_ACTIVE};
+    use windows::Win32::System::Threading::{
+        GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+    unsafe {
+        let Ok(handle) = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) else {
+            return false;
+        };
+        let mut code = 0u32;
+        let running =
+            GetExitCodeProcess(handle, &mut code).is_ok() && code == STILL_ACTIVE.0 as u32;
+        let _ = CloseHandle(handle);
+        running
+    }
+}
+
+fn image_stem(pid: u32) -> Option<String> {
+    use windows::Win32::Foundation::CloseHandle;
+    use windows::Win32::System::Threading::{
+        OpenProcess, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
+        QueryFullProcessImageNameW,
+    };
+    use windows::core::PWSTR;
+    unsafe {
+        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid).ok()?;
+        let mut buffer = vec![0u16; 1024];
+        let mut len = buffer.len() as u32;
+        let ok = QueryFullProcessImageNameW(
+            handle,
+            PROCESS_NAME_WIN32,
+            PWSTR(buffer.as_mut_ptr()),
+            &mut len,
+        )
+        .is_ok();
+        let _ = CloseHandle(handle);
+        if !ok {
+            return None;
+        }
+        let path = String::from_utf16_lossy(&buffer[..len as usize]);
+        std::path::Path::new(&path)
+            .file_stem()
+            .map(|s| s.to_string_lossy().into_owned())
+    }
+}
 
 const PRE_MS: usize = 240; // pre-roll, so we don't clip the first phoneme
 const HANG_MS: usize = 500; // silence that ends a turn
@@ -478,5 +589,27 @@ mod tests {
     fn flushes_mid_monologue_at_the_cap() {
         let mut s = Segmenter::new(0.05);
         assert!(!push_ms(&mut s, 0.3, MAX_MS + 4000).is_empty());
+    }
+
+    #[test]
+    fn hear_picks_the_active_session_by_name() {
+        let s = |pid, active, name: &str| AppSession {
+            pid,
+            active,
+            name: name.into(),
+        };
+        let list = [
+            s(10, false, "Discord"),
+            s(11, true, "Discord"),
+            s(20, true, "chrome"),
+        ];
+        // Case-insensitive substring; the one actually playing wins.
+        assert_eq!(resolve(&list, "discord"), Some(11));
+        assert_eq!(resolve(&list, "CHROME"), Some(20));
+        assert_eq!(resolve(&list, "zoom"), None);
+        // Nothing active yet: the first match, so a quiet app still gets hooked
+        // and picked up the moment it speaks.
+        assert_eq!(resolve(&list[..1], "disc"), Some(10));
+        assert_eq!(resolve(&[], "discord"), None);
     }
 }
