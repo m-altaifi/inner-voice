@@ -18,12 +18,21 @@ param([string]$Exe = '.\target\release\inner-voice.exe')
 $ErrorActionPreference = 'Stop'
 if (-not (Get-Command pwsh.exe -ErrorAction SilentlyContinue)) { throw 'pwsh.exe (PowerShell 7) is needed as the second voice' }
 $log = Join-Path $env:TEMP 'iv-hear-isolation'
-Remove-Item -Recurse -Force $log -ErrorAction SilentlyContinue
+# Kill before cleaning, and fail loudly if the clean did not happen: a stale
+# inner-voice from an interrupted run holds its .jsonl open, the removal fails
+# silently, the fresh app writes a second file beside it, and both are read at
+# the end -- so last run's elephant would print PASS for a run that heard
+# nothing at all.
 Get-Process inner-voice -ErrorAction SilentlyContinue | Stop-Process -Force
+Start-Sleep -Milliseconds 300
+Remove-Item -Recurse -Force $log -ErrorAction SilentlyContinue
+if (Test-Path $log) { throw "could not clear $log; a stale inner-voice may still hold it" }
 
 $app = Start-Process -PassThru -FilePath $Exe -ArgumentList '--provider','none','--hear','pwsh','--log',$log
 try {
     Start-Sleep -Seconds 30   # model load and warm-up; the panel says "hearing: waiting for pwsh..."
+    # An app that died in warm-up is otherwise reported as "not transcribed" 45 s later.
+    if ($app.HasExited) { throw "inner-voice exited during warm-up (exit $($app.ExitCode)); check --hear, the model and devices" }
     $heard = 'The purple elephant is dancing in the kitchen tonight.'
     $decoy = 'An orange giraffe is reading a newspaper by the river.'
     $say = { param($shell, $text, $times) Start-Process -PassThru -FilePath $shell -ArgumentList '-NoProfile','-Command',"`$v = New-Object -ComObject SAPI.SpVoice; 1..$times | ForEach-Object { `$v.Speak('$text') | Out-Null; Start-Sleep 2 }" }
