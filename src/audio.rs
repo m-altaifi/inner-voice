@@ -538,9 +538,12 @@ pub fn run(input: Input, ctx: Arc<WhisperContext>, tx: Sender<Msg>, tune: Arc<Tu
     // until the app plays. So the calibration second would land on the first
     // sentence and set the gate from speech — measured at 0.5942 once, which
     // gated every later turn out. The floor is the right gate here, and
-    // `--sys-gate` still overrides it.
+    // `--sys-gate` still overrides it. It also opts out of the mute: the app's
+    // stream is another process, so the spoken advice is never in it and
+    // deafening it would only lose the far end. The endpoint pumps keep it.
     let app_feed = Feed {
         gate_override: Some(gate_override.unwrap_or(GATE_FLOOR)),
+        mute: None,
         ..feed
     };
 

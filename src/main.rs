@@ -585,10 +585,12 @@ fn main() -> Result<()> {
     let (turn_tx, turn_rx) = unbounded();
     let (ui_tx, ui_rx) = unbounded();
     let references = references::References::new(ui_tx.clone());
-    // The voice is deafened out of the loopback only when the loopback is the
-    // whole endpoint mix. With --hear the app is another process and the voice
-    // is never captured, so nothing is muted and no speech is lost.
-    let mute = (args.speak && args.hear.is_none()).then(|| Arc::new(AtomicBool::new(false)));
+    // The voice is deafened out of *endpoint* capture only, so the mute follows
+    // --speak and not --hear: a process-loopback stream opts out itself (see
+    // `app_feed` in audio.rs), and --hear still falls back to the endpoint mix
+    // when the app cannot be opened — which without this would capture the
+    // advice back as a THEM turn and coach on it.
+    let mute = args.speak.then(|| Arc::new(AtomicBool::new(false)));
     let speaker = args.speak.then(|| speak::Speaker::new(mute.clone()));
 
     // Empty rather than Option so `IV_LOG=` in .env switches it off without a
