@@ -323,6 +323,15 @@ tag vocabulary in one place and it silently renders as body text in the other.
 - Every CLI flag has an `IV_*` env fallback via clap `env`, and `dotenvy::dotenv()`
   runs before `Args::parse`, so the app runs bare with a `.env`. Add both when you
   add a flag, and document it in `.env.example`.
+- **The `.env`'s folder becomes the working directory.** Nine defaults are
+  relative (model, `prompt.md`, `research.md`, `knowledge/`, `references/`,
+  `logs/`, `es.exe`), which used to mean the app only ran when launched *from*
+  the project directory — the actual reason starting it meant typing a path.
+  `dotenv()` already walks up to find the file, so `main` adopts its parent with
+  `set_current_dir`. A relative default is therefore safe to add; do not "fix" it
+  into an exe-relative path. No `.env` anywhere leaves the directory untouched.
+  `inner-voice.cmd` at the root is the double-click entry point and forwards its
+  arguments.
 - `LEDGER.md` is the durable project state — phases, measured numbers, and locked
   decisions that are not to be re-litigated. Update its **Now** block after a work
   session; read the decisions before proposing an architecture change.

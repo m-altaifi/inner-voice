@@ -558,7 +558,20 @@ fn local_answer(tx: &Sender<Msg>, references: &references::References, question:
 fn main() -> Result<()> {
     // Before Args::parse, so clap's `env` fallbacks see it. Walks up from the
     // cwd, so running the exe from target/release still finds the repo's .env.
-    let _ = dotenvy::dotenv();
+    // Nine defaults below are relative — the model, prompt.md, research.md,
+    // knowledge/, references/, logs/, es.exe — so the app has only ever worked
+    // when launched *from* the project directory. That is the whole reason
+    // starting it means typing a path instead of double-clicking something.
+    // `dotenv()` already walks up from the current directory to find `.env`;
+    // adopting that file's folder as the working directory costs one line and
+    // makes the exe sitting in `targetelease`, a pinned shortcut, and a shell
+    // in any subdirectory all resolve the same files. No `.env` found anywhere
+    // leaves the directory exactly as it was.
+    if let Ok(env) = dotenvy::dotenv()
+        && let Some(root) = env.parent()
+    {
+        let _ = std::env::set_current_dir(root);
+    }
     let args = Args::parse();
     if args.preview {
         let (tx, rx) = unbounded();

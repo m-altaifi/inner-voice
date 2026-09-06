@@ -7,6 +7,21 @@ Update the **Now** block after every work session. Nothing else here is chronolo
 
 ## Now
 
+**Launching (2026-09-06):** "a bit hard to use" turned out to be the launch, not
+the panel. Root cause: nine defaults are relative, so the app only ever worked
+when started *from* the project directory — which is why running it meant typing
+a path and a flag list. `main` now adopts the folder of the `.env` that
+`dotenv()` already walked up to find, and `inner-voice.cmd` at the root is the
+double-click entry point. Verified: `--setup` run with the working directory set
+to `target/release` — the double-click case — is all-✓ and finds the 574 MB
+model. Put `IV_HEAR` / `IV_SPEAK` / `IV_DUMP` in `.env` (commented entries are
+there now) and a bare launch is the whole call setup.
+
+Not changed: the binary is still a console subsystem app, so a double-click
+brings a console with whisper's load output beside the panel. That output is
+worth having when something is wrong; `windows_subsystem = "windows"` would hide
+the one place a model or CUDA failure is currently visible.
+
 **Any app, several at once, switchable mid-run (2026-09-06):** `--hear` takes a
 comma list and the selection moved from `Input` into `Tune` (`hear` +
 `hear_gen`), so `/hear` typed in the question box rewrites it without a restart.

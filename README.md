@@ -28,8 +28,24 @@ or ✗ with the fix next to each. Run it again after changing `.env`; compare
 providers by the number it prints. Exit code 1 means something is ✗.
 
 Edit `.env` to select a provider and supply its key before enabling coaching.
-Flags override environment variables and `.env`. Relative paths resolve from
-the working directory. Use `--help` for all options.
+Flags override environment variables and `.env`. Use `--help` for all options.
+
+### Running it
+
+Double-click **`inner-voice.cmd`** in the project folder, or pin it to the
+taskbar. Nothing else is needed: any flags you pass it are forwarded, so
+`inner-voice.cmd --setup` works too.
+
+You do not have to launch it *from* the project directory. `.env` is found by
+walking up from wherever the exe starts, and its folder becomes the working
+directory — so the model, `prompt.md`, `knowledge/`, `references/`, `logs/` and
+`es.exe` resolve the same whether you double-click the exe in `target\release`,
+use a shortcut, or run it from a subfolder. With no `.env` anywhere, the working
+directory is left alone and every relative path is yours to supply.
+
+Put the settings you use every time in `.env` rather than on the command line —
+`IV_HEAR`, `IV_SPEAK`, `IV_DUMP` and the rest all have entries there — and a
+bare launch does the right thing. Every flag has an `IV_*` equivalent.
 
 `build.ps1` discovers Visual Studio using `vswhere`; `IV_VS_PATH` overrides it.
 It respects `CUDA_PATH`, `CMAKE_CUDA_ARCHITECTURES`, and `CMAKE_CUDA_FLAGS`.
