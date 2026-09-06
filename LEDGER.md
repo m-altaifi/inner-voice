@@ -7,8 +7,8 @@ Update the **Now** block after every work session. Nothing else here is chronolo
 
 ## Now
 
-**Provider chosen (2026-09-06):** `openrouter` + `google/gemini-3.5-flash-lite`,
-now the `.env` default. Same model both ways, measured on this machine with
+**Providers measured (2026-09-06):** OpenRouter is the **testing lane only**;
+`.env` stays on gemini direct. Same model both ways, measured on this machine with
 `--setup` and `live_provider_returns_advice`:
 
 | lane | turn 1 (cold) | turns 2-3 | `--setup` probe |
@@ -17,11 +17,18 @@ now the `.env` default. Same model both ways, measured on this machine with
 | gemini direct gemini-3.5-flash-lite | 4.0 s | 632-640 ms | 845-993 ms |
 
 Warm is a wash; the difference is entirely the *cold* path -- Google's is ~3.5 s,
-OpenRouter's ~0.4 s, small enough that the startup warm-up hides it. That
-settles open question 1 for now: not on warm latency, which no lane wins, but on
-the first turn, which is the one a call actually notices. Anthropic direct still
-has the only fast-mode + prompt-caching wire and is untested here because
-`ANTHROPIC_API_KEY` is empty; deepseek answers 402.
+OpenRouter's ~0.4 s, small enough that the startup warm-up hides it. Open
+question 1 is therefore decided on the *first* turn, not on warm latency, which
+no lane wins -- but the winner is a testing lane, so production stays gemini
+direct and eats the cold turn. Anthropic direct has the only fast-mode +
+prompt-caching wire and is untested here because `ANTHROPIC_API_KEY` is empty;
+deepseek answers 402.
+
+**No `--test` flag.** Testing is one command line
+(`--provider openrouter --model <id>`), and a flag would have to hardcode an
+OpenRouter model id -- the exact stale-default trap `provider.rs` refuses by
+giving openrouter, openai and gemini no default model at all. An alias that
+404s mid-call costs more than the typing it saves.
 
 **Do not put a reasoning model on the fast lane.** `openai/gpt-oss-120b` and
 `qwen/qwen3.7-flash` both fail `--setup` with "provider returned no advice":
