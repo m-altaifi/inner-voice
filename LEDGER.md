@@ -7,6 +7,16 @@ Update the **Now** block after every work session. Nothing else here is chronolo
 
 ## Now
 
+**Wave 3 — shippable (2026-09-06):** `--setup` (`setup.rs`) checks model, CUDA
+(timed warm-up), devices, playing apps, provider (`coach::probe`: one tiny
+request, TTFT in ms, comparable across providers; a live turn reads higher),
+OCR, and the two folders, ✓/✗ with the fix, exit 1 on any ✗. The status line
+names the model, so the on-screen `first word` number is attributable and
+providers are compared from evidence. `references/` is git-ignored. **Still the
+user's to do:** rotate the OpenRouter and Gemini keys that appear in an earlier
+chat transcript (Machine facts above); the real acceptance call with
+`--hear <app> --speak --dump clips`.
+
 **Wave 2 — memory (2026-09-06):** `extract.rs` is the one loader (txt/md/csv/
 sheets/PDF/DOCX/OCR); `knowledge::Corpus` re-reads the folder before each
 coach request when its newest mtime moves and pushes the new prompt to the

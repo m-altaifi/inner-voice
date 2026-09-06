@@ -13,3 +13,4 @@ dist/
 *.out
 *.err
 tools/preview-*.png
+tests/fixtures/*.tmp

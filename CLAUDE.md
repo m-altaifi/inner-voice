@@ -24,6 +24,10 @@ after the script name is forwarded to cargo.
 - The live provider test in `src/coach.rs` costs money and is opt-in:
   `$env:IV_LIVE_TEST=1; .\build.ps1 test --release live_provider`.
 - `CMAKE_CUDA_ARCHITECTURES` in `build.ps1` is hardcoded to `86` (RTX 3080 Ti).
+- `.\target\release\inner-voice.exe --setup` is the first thing to run on a new
+  machine or after editing `.env`: it loads the model, warms CUDA, lists devices
+  and playing apps, times the provider's first token, and checks OCR and the
+  folders.
 
 ## Architecture
 
@@ -92,10 +96,13 @@ Current additions (2026-09-05): `history.rs` owns the typed 24-turn context.
 `agent.rs` runs optional hotkey-triggered CLI research — the adapter follows the
 `--agent-cmd` file stem, `claude` or Codex; `process.rs` contains
 hidden subprocesses with Job Objects, cancellation, deadlines, and output caps.
-`search.rs` uses bounded Everything UTF-8 exports. Research completions and coach
-messages go through the router for logging. The coach now owns one HTTP worker
-and a single newest pending request, rather than spawning per turn. See README
-for the current controls and configuration; older thread counts below are history.
+`search.rs` uses bounded Everything UTF-8 exports. `setup.rs` runs the `--setup`
+checks and renders them; it calls `audio::warm`, `audio::sessions`,
+`coach::probe` and `extract::ocr_available` rather than duplicating any of them.
+Research completions and coach messages go through the router for logging. The
+coach now owns one HTTP worker and a single newest pending request, rather than
+spawning per turn. See README for the current controls and configuration; older
+thread counts below are history.
 
 Threads plus crossbeam channels; one `Msg` enum (`src/main.rs`) is everything
 the panel can render.

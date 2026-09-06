@@ -16,9 +16,16 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\build.ps1 build --release
 Copy-Item .env.example .env
 New-Item -ItemType Directory -Force models
 curl.exe -fL -o models/ggml-large-v3-turbo-q5_0.bin https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo-q5_0.bin
-.\target\release\inner-voice.exe --list-devices
-.\target\release\inner-voice.exe --provider none
+.\target\release\inner-voice.exe --setup
 ```
+
+`--setup` checks the model, CUDA (one warm-up inference, timed), your microphone
+and speakers, which apps are playing, the configured provider (one tiny request,
+with the time to first token — the same quantity the panel shows as `first word`
+— a live turn carries the pinned corpus and the last 24 turns, so expect it
+higher), Windows OCR, and the `knowledge/` and `references/` folders, printing ✓
+or ✗ with the fix next to each. Run it again after changing `.env`; compare
+providers by the number it prints. Exit code 1 means something is ✗.
 
 Edit `.env` to select a provider and supply its key before enabling coaching.
 Flags override environment variables and `.env`. Relative paths resolve from
@@ -90,11 +97,12 @@ you scroll up to re-read; scroll back to the end and they resume.
 
 The status line counts the wait for advice — `thinking 1.4s` while the model
 works, then `first word 1.2s`, which is the time to first token on that turn
-and stays up until the next one. `ASK` and `FIX` headings are the only saturated
-colour; `SAY` is soft green and `NOTE` recedes. `THEM` is brighter than `YOU`
-because `THEM` is what you react to. The last turn's advice stays on screen,
-greyed, until the next replaces it. The `Ctrl+Shift+F11` reminder leaves the
-status line after ten seconds.
+and stays up until the next one. It also names the model in use, so the number
+is attributable. `ASK` and `FIX` headings are the only saturated colour; `SAY`
+is soft green and `NOTE` recedes. `THEM` is brighter than `YOU` because `THEM`
+is what you react to. The last turn's advice stays on screen, greyed, until the
+next replaces it. The `Ctrl+Shift+F11` reminder leaves the status line after ten
+seconds.
 
 Drag anywhere on the panel to move it — there is no title strip to aim for, and
 the panel is meant to sit wherever the call is not. An edge or corner resizes.
