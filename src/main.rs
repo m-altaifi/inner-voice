@@ -139,7 +139,11 @@ struct Args {
 
     /// Read advice aloud. With --hear the voice is never captured; without it
     /// the call is deafened while the voice talks
-    #[arg(long, env = "IV_SPEAK")]
+    // A bool flag's default parser is the strict one — `true`/`false` only — and
+    // it is applied to the env value too, so `IV_SPEAK=1` in a .env aborted
+    // startup with an argument error. Boolish is clap's documented pairing with
+    // SetTrue and takes 1/0/yes/no/on/off as well.
+    #[arg(long, env = "IV_SPEAK", value_parser = clap::builder::BoolishValueParser::new())]
     speak: bool,
 
     /// Save every utterance here as a .wav next to the .txt whisper made of it
@@ -621,7 +625,7 @@ fn main() -> Result<()> {
     // when the app cannot be opened — which without this would capture the
     // advice back as a THEM turn and coach on it.
     let mute = args.speak.then(|| Arc::new(AtomicBool::new(false)));
-    let speaker = args.speak.then(|| speak::Speaker::new(mute.clone()));
+    let speaker = mute.as_ref().map(|m| speak::Speaker::new(m.clone()));
 
     // Empty rather than Option so `IV_LOG=` in .env switches it off without a
     // second flag to keep in sync.

@@ -44,7 +44,9 @@ Win32 version could not. Decision 7's glance rules are in `Tag` (colours) and
 `status_text` (the wait as a number, which doubles as the standing TTFT
 instrument); both are tested. `THEM` capture is per-app when `--hear` names one
 (`audio::open_process` on the app's process tree), with reacquire when it starts
-late or restarts; the endpoint mix is the fallback. The *whole* window is the drag grip (`hit_test` returns
+late or restarts; the endpoint mix is the fallback. The app is looked for only in
+the `--loopback` device's own sessions, so an app playing elsewhere is never
+found. The *whole* window is the drag grip (`hit_test` returns
 `Grab::Move` for anything that is not a resize edge), which is why
 `style.interaction.selectable_labels` is off: text selection would swallow the
 gesture, and it was dead weight anyway since a `WS_EX_NOACTIVATE` window never

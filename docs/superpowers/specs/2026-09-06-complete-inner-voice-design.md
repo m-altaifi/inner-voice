@@ -192,7 +192,7 @@ Kept. `Speaker::new(mute: Option<Arc<AtomicBool>>)`; `main` passes `Some` only
 when `speak && hear.is_none()`, with the startup notice
 `speak: reading advice mutes the call; add --hear <app> so it doesn't`. With
 `--hear`, TTS is another process and is never captured: no mute, no lost speech.
-The compiled default stays off; `.env.example` ships `IV_SPEAK=1` for the user's
+The compiled default stays off; `.env.example` ships `IV_SPEAK=true` for the user's
 machine ("activated" is read as: on, on this machine, by configuration).
 
 ### 4.4 Research over HTTP (`src/coach.rs`, `src/main.rs`)
@@ -337,7 +337,7 @@ CLI lane.
 - **Checklist (user, not code):** rotate the OpenRouter and Gemini keys the
   LEDGER records as present in a chat transcript; record it in the LEDGER when
   done.
-- `.env.example` gains `IV_HEAR`, `IV_REFERENCES`, `IV_SPEAK=1`; `.gitignore`
+- `.env.example` gains `IV_HEAR`, `IV_REFERENCES`, `IV_SPEAK=true`; `.gitignore`
   gains `references/`. README "Setup" leads with `--setup`; "Controls" documents
   `--hear`, `--list-apps`, `--references`, the speak behaviour, persistence
   semantics, and the new formats.

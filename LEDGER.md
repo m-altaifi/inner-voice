@@ -35,7 +35,7 @@ panel warns about at startup, or `--hear` whose app client could not open.
 
 Research runs over HTTP on its own worker whenever a provider is online
 (`Coach::research`, exactly one `ToolEnd` per job by CAS). Its ids are seeded at
-`1 << 32` because `agent.rs` mints `ToolStart` ids from 0 on the same channel;
+`1 << 32` because `agent.rs` mints `ToolStart` ids from 1 on the same channel;
 the router also makes the two lanes mutually exclusive per session, so a
 collision needs both belts to fail. The CLI lane still wins when `--agent-cmd`
 is set, and is still unverified against a real Codex.

@@ -338,11 +338,10 @@ pub struct Input {
     pub hear: Option<String>,
 }
 
-/// An open capture stream. `event` is set only for event-driven streams.
+/// An open capture stream.
 struct Stream {
     client: AudioClient,
     capture: AudioCaptureClient,
-    event: Option<wasapi::Handle>,
 }
 
 impl Stream {
@@ -372,11 +371,7 @@ fn open_endpoint(dev: &Device) -> Result<Stream> {
     )?;
     let capture = client.get_audiocaptureclient()?;
     client.start_stream()?;
-    Ok(Stream {
-        client,
-        capture,
-        event: None,
-    })
+    Ok(Stream { client, capture })
 }
 
 /// Loopback on one process tree: only that app, whatever else is playing.
@@ -397,11 +392,7 @@ fn open_process(pid: u32) -> Result<Stream> {
     )?;
     let capture = client.get_audiocaptureclient()?;
     client.start_stream()?;
-    Ok(Stream {
-        client,
-        capture,
-        event: None,
-    })
+    Ok(Stream { client, capture })
 }
 
 /// Everything the capture loop needs that is not the stream itself.
@@ -583,6 +574,13 @@ pub fn run(input: Input, ctx: Arc<WhisperContext>, tx: Sender<Msg>, tune: Arc<Tu
             tx.send(Msg::Sys(format!("hearing: {app} stopped: {e}")))?;
         }
         stream.close();
+        // A read error with the app still running is a device problem, not a
+        // restart: reopening immediately would spin this capture thread and
+        // flood Diagnostics with two `Sys` per pass. The app-closed path keeps
+        // its reacquire latency — `alive` is false there.
+        if alive(pid) {
+            std::thread::sleep(Duration::from_secs(2));
+        }
     }
 }
 
@@ -622,9 +620,6 @@ fn pump(stream: &Stream, feed: &Feed, still_there: &mut dyn FnMut() -> bool) -> 
             let g = calibrated_gate(&mut cal);
             tx.send(Msg::Sys(format!("{label} gate {g:.4}")))?;
             seg = Some(Segmenter::new(g));
-        }
-        if let Some(event) = &stream.event {
-            let _ = event.wait_for_event(100);
         }
         stream.capture.read_from_device_to_deque(&mut raw)?;
         let epoch = tune.epoch.load(Ordering::SeqCst);

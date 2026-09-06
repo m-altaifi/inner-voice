@@ -203,8 +203,10 @@ name, case-insensitive; `--list-apps` shows what is playing). `THEM` is then tha
 app's process tree alone. If the app is not running yet the panel says
 `hearing: waiting for discord…` and hooks it when it starts; if it restarts, the
 panel follows it to its new process. If the app stream cannot be opened at all it
-falls back to the whole speaker mix and says so. Without `--hear`, `THEM` is
-everything the speakers play.
+falls back to the whole speaker mix and says so. `--hear` looks for the app on the
+`--loopback` device — `--list-apps` shows which device it searched — so if your
+call app plays through a different device, name that device with `--loopback`.
+Without `--hear`, `THEM` is everything the speakers play.
 
 An app stream is that app's own digital output, so there is no room noise to
 measure and no calibration second: it takes the floor gate (0.004) and reports
