@@ -212,9 +212,11 @@ measure and no calibration second: it takes the floor gate (0.004) and reports
 speaker-mix path — including the fallback — calibrates as before.
 
 `--speak` reads advice aloud, and is off unless set (`.env.example` ships it on).
-With `--hear` the voice is another process and is never captured; without it the
-call is deafened while the voice talks and remote speech can be lost — the panel
-says so at startup, and adding `--hear` is the fix.
+With `--hear` the voice is another process and is never captured — unless that
+app's stream cannot be opened and `THEM` falls back to the speaker mix, which is
+deafened like any other. Without `--hear` the call is deafened while the voice
+talks and remote speech can be lost; the panel says so at startup, and adding
+`--hear` is the fix.
 
 Optional far-end speaker identification:
 

@@ -74,9 +74,11 @@ controls exist to read with `GetDlgItem` any more, so the panel mirrors its
 of the layout free to disagree with the screen. Screenshots cover the drawing.
 `Msg::Sys` lines are panel-only: they land in Diagnostics (Ctrl+Shift+F4) and are
 never written to the JSONL log — `route` records `COACH`, `RESEARCH` and turns
-and drops `Sys` — so the mirror's `notice` carries only what `pump`'s prefix
-filter admits (`hearing:`, `speak:`, `coach:`, `research off`, `Preview`, and
-anything saying "failed" or "stopped"). Pause changes an audio epoch, and `audio.rs` discards queued
+and drops `Sys`. Of the `Sys` diagnostics only the prefixes `pump`'s filter
+admits reach the notice line (`hearing:`, `speak:`, `coach:`, `research off`,
+`Preview`, and anything saying "failed" or "stopped"); reference status,
+research start/end, cleared references and the hotkey-clash note set `notice`
+directly and pass through no filter at all. Pause changes an audio epoch, and `audio.rs` discards queued
 and in-flight work from earlier epochs — but only up to `Msg::Turn`. A `Turn`
 carries no epoch, and `Msg::Pause` travels the same FIFO behind it, so one turn
 captured just before the pause still lands. Do not describe pause as a hard
