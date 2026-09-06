@@ -9,7 +9,7 @@ use std::fmt::Write as _;
 use std::path::Path;
 
 /// What `text` accepts, for error messages and `--setup`.
-pub const FORMATS: &str = "TXT, Markdown, CSV, an Excel/OpenDocument spreadsheet, PDF, or DOCX";
+pub const FORMATS: &str = "TXT, Markdown, CSV, an Excel/OpenDocument spreadsheet, PDF, DOCX, or an image (PNG/JPG/BMP/TIFF/GIF, read by Windows OCR)";
 
 fn extension(path: &Path) -> String {
     path.extension()
@@ -22,7 +22,22 @@ fn extension(path: &Path) -> String {
 pub fn supported(path: &Path) -> bool {
     matches!(
         extension(path).as_str(),
-        "txt" | "md" | "csv" | "xlsx" | "xlsm" | "xls" | "ods" | "pdf" | "docx"
+        "txt"
+            | "md"
+            | "csv"
+            | "xlsx"
+            | "xlsm"
+            | "xls"
+            | "ods"
+            | "pdf"
+            | "docx"
+            | "png"
+            | "jpg"
+            | "jpeg"
+            | "bmp"
+            | "tif"
+            | "tiff"
+            | "gif"
     )
 }
 
@@ -34,6 +49,7 @@ pub fn text(path: &Path) -> Result<String> {
         "xlsx" | "xlsm" | "xls" | "ods" => sheet_to_text(path),
         "pdf" => pdf(path),
         "docx" => docx(path),
+        "png" | "jpg" | "jpeg" | "bmp" | "tif" | "tiff" | "gif" => ocr(path),
         _ => bail!("unsupported format; use {FORMATS}"),
     }
 }
@@ -124,6 +140,47 @@ fn docx(path: &Path) -> Result<String> {
         }
     }
     Ok(out)
+}
+
+/// Windows' own OCR (WinRT `Windows.Media.Ocr`), which is already in the
+/// `windows` crate this app links — no tesseract, no model download. It needs
+/// a language pack with OCR installed, and an apartment on the calling thread.
+fn ocr(path: &Path) -> Result<String> {
+    use windows::{
+        Graphics::Imaging::BitmapDecoder,
+        Media::Ocr::OcrEngine,
+        Storage::{FileAccessMode, StorageFile},
+        core::HSTRING,
+    };
+    // `canonicalize` would yield a `\\?\` path, which StorageFile refuses.
+    let absolute = std::path::absolute(path)?;
+    let engine = OcrEngine::TryCreateFromUserProfileLanguages().context(
+        "no OCR language installed: Settings > Time & language > Language & region > \
+         add a language, then its optional Optical character recognition feature",
+    )?;
+    let file = StorageFile::GetFileFromPathAsync(&HSTRING::from(absolute.as_os_str()))?.join()?;
+    let stream = file.OpenAsync(FileAccessMode::Read)?.join()?;
+    let bitmap = BitmapDecoder::CreateAsync(&stream)?
+        .join()?
+        .GetSoftwareBitmapAsync()?
+        .join()?;
+    let result = engine.RecognizeAsync(&bitmap)?.join()?;
+    let mut out = String::new();
+    for line in result.Lines()? {
+        out.push_str(&line.Text()?.to_string_lossy());
+        out.push('\n');
+    }
+    if out.trim().is_empty() {
+        bail!("no text recognised in the image");
+    }
+    Ok(out)
+}
+
+/// Whether an OCR engine can be created on this machine.
+// `--setup` (Wave 3) is the consumer; the allow goes with it.
+#[allow(dead_code)]
+pub fn ocr_available() -> bool {
+    windows::Media::Ocr::OcrEngine::TryCreateFromUserProfileLanguages().is_ok()
 }
 
 /// Flatten a spreadsheet to `key: value` lines.
@@ -278,5 +335,23 @@ mod tests {
         let junk = scratch("g.docx");
         std::fs::write(&junk, b"not a zip").unwrap();
         assert!(text(&junk).unwrap_err().to_string().contains("DOCX"));
+    }
+    #[test]
+    fn images_are_read_by_windows_ocr_when_a_language_is_installed() {
+        let _ = unsafe {
+            windows::Win32::System::Com::CoInitializeEx(
+                None,
+                windows::Win32::System::Com::COINIT_MULTITHREADED,
+            )
+        };
+        // Same rule as the GPU test: the machine decides whether this runs.
+        if !ocr_available() {
+            eprintln!("skipping: no Windows OCR language installed");
+            return;
+        }
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/ocr.png");
+        let out = text(&path).unwrap();
+        assert!(out.contains("Sarah"), "{out:?}");
+        assert!(supported(&path));
     }
 }

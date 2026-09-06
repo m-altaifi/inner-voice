@@ -49,6 +49,14 @@ impl References {
         let (queue, rx) = bounded::<(u64, PathBuf)>(MAX_FILES);
         let (data, output) = (library.clone(), tx.clone());
         std::thread::spawn(move || {
+            // OCR is WinRT and needs an apartment on this thread; the capture
+            // threads do the same for WASAPI.
+            let _ = unsafe {
+                windows::Win32::System::Com::CoInitializeEx(
+                    None,
+                    windows::Win32::System::Com::COINIT_MULTITHREADED,
+                )
+            };
             while let Ok((generation, path)) = rx.recv() {
                 let result = std::panic::catch_unwind(|| load(path.clone()))
                     .unwrap_or_else(|_| Err(anyhow::anyhow!("document reader failed")));

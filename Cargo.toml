@@ -21,7 +21,7 @@ serde_json = "1.0.151"
 ureq = { version = "3.4.0", features = ["json"] }
 wasapi = "0.24.0"
 whisper-rs = { version = "0.16.0", features = ["cuda"] }
-windows = { version = "0.62.2", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_UI_WindowsAndMessaging", "Win32_System_LibraryLoader", "Win32_Media_Speech", "Win32_System_Com", "Win32_UI_Input_KeyboardAndMouse", "Win32_System_JobObjects", "Win32_System_Threading", "Win32_Security", "Win32_UI_Shell"] }
+windows = { version = "0.62.2", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_UI_WindowsAndMessaging", "Win32_System_LibraryLoader", "Win32_Media_Speech", "Win32_System_Com", "Win32_UI_Input_KeyboardAndMouse", "Win32_System_JobObjects", "Win32_System_Threading", "Win32_Security", "Win32_UI_Shell", "Media_Ocr", "Graphics_Imaging", "Storage", "Storage_Streams", "Foundation", "Foundation_Collections"] }
 winit = "0.30.13"
 zip = { version = "8.6.0", default-features = false, features = ["deflate"] }
 
