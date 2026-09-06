@@ -19,6 +19,7 @@ use std::{
         Arc,
         atomic::{AtomicU64, Ordering},
     },
+    time::{Duration, Instant},
 };
 use windows::Win32::{
     Foundation::{HWND, POINT, RECT},
@@ -62,6 +63,69 @@ const PIN: usize = 114;
 /// the advice is answering has already scrolled away, so the layout reserves
 /// room for this many before the advice gets whatever is left.
 const VISIBLE_TURNS: f32 = 8.0;
+
+/// How long the status line carries `Ctrl+Shift+F11 for keys` after launch.
+///
+/// A permanent hint is permanent noise (LEDGER Decision 7); the empty advice
+/// pane already names the key list, and the list is one key away.
+const HINT_SECS: u64 = 10;
+
+/// What the panel is doing, for the status line.
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum Mode {
+    Preview,
+    Paused,
+    Listening { online: bool },
+}
+
+/// Where the current advice is in its wait, for the status line.
+///
+/// Doherty: the loop is ~1–2 s, well past the 400 ms "instant" line, so the
+/// panel counts the wait instead of spinning — `thinking 1.4s` live, then
+/// `first word 1.2s` frozen. The frozen number is the standing TTFT
+/// instrument on every turn of a real call.
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum Wait {
+    Idle,
+    Thinking(f32),
+    FirstWord(f32),
+}
+
+/// The status line, as a pure function so its grammar is testable.
+///
+/// Order: mode · model · wait · researching · pinned · hint. A named model
+/// replaces "coaching on" rather than joining it; the hint is always last.
+fn status_text(
+    mode: Mode,
+    wait: Wait,
+    model: Option<&str>,
+    researching: bool,
+    pinned: bool,
+    hint: bool,
+) -> String {
+    let mut s = match (mode, model) {
+        (Mode::Preview, _) => "Preview — microphone off · no online requests".to_string(),
+        (Mode::Paused, _) => "Paused — audio is not being transcribed".to_string(),
+        (Mode::Listening { online: true }, Some(model)) => format!("Listening · {model}"),
+        (Mode::Listening { online: true }, None) => "Listening · coaching on".to_string(),
+        (Mode::Listening { online: false }, _) => "Listening · transcription only".to_string(),
+    };
+    match wait {
+        Wait::Idle => {}
+        Wait::Thinking(secs) => s.push_str(&format!(" · thinking {secs:.1}s")),
+        Wait::FirstWord(secs) => s.push_str(&format!(" · first word {secs:.1}s")),
+    }
+    if researching {
+        s.push_str(" · researching");
+    }
+    if pinned {
+        s.push_str(" · pinned");
+    }
+    if hint {
+        s.push_str("   ·   Ctrl+Shift+F11 for keys");
+    }
+    s
+}
 
 /// Every action, and the system-wide key that reaches it.
 ///
@@ -250,6 +314,12 @@ struct State {
     /// Frozen in place: no drag, no resize.
     pinned: bool,
     drag: Option<Dragging>,
+    /// When the panel opened; the key hint leaves `HINT_SECS` later.
+    launched: Instant,
+    /// When the live generation's `AdviceStart` arrived.
+    asked_at: Option<Instant>,
+    /// When its first token landed. `asked_at → first_word_at` is the TTFT.
+    first_word_at: Option<Instant>,
     alpha: f32,
     notice: String,
     question: String,
@@ -357,11 +427,14 @@ impl State {
                 Msg::AdviceStart(id) => {
                     self.seq = id;
                     self.thinking = true;
+                    self.asked_at = Some(Instant::now());
+                    self.first_word_at = None;
                 }
                 Msg::Advice(id, text) if id == self.seq => {
                     if self.thinking {
                         self.advice.clear();
                         self.thinking = false;
+                        self.first_word_at = Some(Instant::now());
                     }
                     self.advice.push_str(&text);
                 }
@@ -410,6 +483,8 @@ impl State {
                 self.session.epoch.fetch_add(1, Ordering::SeqCst);
                 self.seq = u64::MAX;
                 self.thinking = false;
+                self.asked_at = None;
+                self.first_word_at = None;
                 let _ = self.tx.send(Msg::Pause(self.paused));
             }
             // From another view this only brings the result up; pressing it
@@ -447,31 +522,33 @@ impl State {
             _ => {}
         }
     }
+    fn wait(&self) -> Wait {
+        match (self.asked_at, self.first_word_at) {
+            (Some(asked), Some(first)) => {
+                Wait::FirstWord(first.duration_since(asked).as_secs_f32())
+            }
+            (Some(asked), None) if self.thinking => Wait::Thinking(asked.elapsed().as_secs_f32()),
+            _ => Wait::Idle,
+        }
+    }
     fn status_line(&self) -> String {
-        let mut status = if self.session.preview {
-            "Preview — microphone off · no online requests"
+        let mode = if self.session.preview {
+            Mode::Preview
         } else if self.paused {
-            "Paused — audio is not being transcribed"
-        } else if self.thinking {
-            "Listening · preparing advice…"
-        } else if self.session.online {
-            "Listening · coaching on"
+            Mode::Paused
         } else {
-            "Listening · transcription only"
-        }
-        .to_string();
-        if self.researching {
-            status.push_str(" · researching");
-        }
-        // Only the pinned state is worth a word: unpinned is the default, and
-        // the panel visibly moves when you drag it.
-        if self.pinned {
-            status.push_str(" · pinned");
-        }
-        // Nothing else on screen is clickable, so this line always carries the
-        // way back to the key list.
-        status.push_str("   ·   Ctrl+Shift+F11 for keys");
-        status
+            Mode::Listening {
+                online: self.session.online,
+            }
+        };
+        status_text(
+            mode,
+            self.wait(),
+            None,
+            self.researching,
+            self.pinned,
+            self.launched.elapsed() < Duration::from_secs(HINT_SECS),
+        )
     }
     /// The conversation, newest last. Always on screen: the advice is an answer
     /// to the last turn, and an answer without its question is a riddle.
@@ -650,6 +727,11 @@ impl State {
             "researching": self.researching,
             "pinned": self.pinned,
             "dragging": self.drag.is_some(),
+            "wait": match self.wait() {
+                Wait::Idle => "",
+                Wait::Thinking(_) => "thinking",
+                Wait::FirstWord(_) => "first word",
+            },
             "question": self.question,
             "references": self.session.references.preview(),
             "imports": self.imports.len(),
@@ -729,7 +811,12 @@ impl eframe::App for State {
             .show_separator_line(false)
             .show(ui, |ui| {
                 ui.add_space(10.0);
-                ui.label(RichText::new(self.status_line()).color(MUTED).size(13.0));
+                ui.label(
+                    RichText::new(self.status_line())
+                        .color(MUTED)
+                        .size(13.0)
+                        .monospace(),
+                );
                 ui.add_space(4.0);
                 if !self.notice.is_empty() {
                     ui.label(RichText::new(&self.notice).color(ACCENT).size(13.0));
@@ -887,6 +974,9 @@ pub fn run(
                 typing: false,
                 pinned: false,
                 drag: None,
+                launched: Instant::now(),
+                asked_at: None,
+                first_word_at: None,
                 dump: std::env::var_os("IV_UI_DUMP").map(|p| (p.into(), String::new())),
             };
             // A hotkey belongs to whoever registered it first, process-wide, so
@@ -1030,5 +1120,62 @@ mod tests {
         // Quit has no key on purpose; Alt+F4 closes.
         assert!(!ids.contains(&CLOSE));
         assert!(ids.contains(&PIN));
+    }
+    #[test]
+    fn status_line_counts_the_wait_and_only_hints_early() {
+        assert_eq!(
+            status_text(
+                Mode::Listening { online: true },
+                Wait::Thinking(1.42),
+                None,
+                false,
+                false,
+                false
+            ),
+            "Listening · coaching on · thinking 1.4s"
+        );
+        assert_eq!(
+            status_text(
+                Mode::Listening { online: true },
+                Wait::FirstWord(1.2),
+                None,
+                false,
+                true,
+                false
+            ),
+            "Listening · coaching on · first word 1.2s · pinned"
+        );
+        // The hint is the last thing on the line and only while it is shown.
+        assert_eq!(
+            status_text(Mode::Preview, Wait::Idle, None, false, false, true),
+            "Preview — microphone off · no online requests   ·   Ctrl+Shift+F11 for keys"
+        );
+        // A named model replaces the generic "coaching on" (sub-project 3 passes it).
+        assert_eq!(
+            status_text(
+                Mode::Listening { online: true },
+                Wait::Idle,
+                Some("gemini-3.5-flash-lite"),
+                true,
+                false,
+                false
+            ),
+            "Listening · gemini-3.5-flash-lite · researching"
+        );
+        assert_eq!(
+            status_text(
+                Mode::Listening { online: false },
+                Wait::Idle,
+                None,
+                false,
+                false,
+                false
+            ),
+            "Listening · transcription only"
+        );
+        assert_eq!(
+            status_text(Mode::Paused, Wait::Thinking(9.0), None, false, false, false),
+            "Paused — audio is not being transcribed · thinking 9.0s"
+        );
     }
 }

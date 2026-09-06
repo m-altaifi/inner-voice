@@ -124,6 +124,9 @@ foreach ($vk in 0x70, 0x71, 0x7A) {          # Ctrl+Shift+F1, F2, F11
 # pane. 102 = whole conversation, 113 = key list, 101 = advice.
 if ($state.turns -lt 1) { throw 'Preview seeded no conversation' }
 if ($state.advice -notmatch 'ASK') { throw 'Preview seeded no advice' }
+# --preview seeds AdviceStart -> Advice -> AdviceEnd before the panel exists, so
+# the TTFT instrument reads `first word 0.0s`. That it reads at all is the check.
+if ($state.wait -ne 'first word') { throw "Status line is not showing the TTFT number: wait='$($state.wait)'" }
 Press 102
 if ((Read-State).view -ne 102) { throw 'Hotkey did not switch to the conversation' }
 Press 113
