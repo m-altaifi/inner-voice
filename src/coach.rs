@@ -27,6 +27,36 @@ paragraphs, no markdown headers.";
 /// Research answers a question, not a glance: room to reason, not 2–4 lines.
 const RESEARCH_MAX_TOKENS: u32 = 2_000;
 
+/// One tiny request, timed to the first token. This is `--setup`'s evidence
+/// that the configured provider answers and how fast — the same number the
+/// status line shows as `first word` on a call, so a user choosing between
+/// providers compares like with like.
+// Nothing in the bin build calls it until `--setup` lands; holding the function
+// back until then would only merge two changes that are cleaner apart.
+#[allow(dead_code)]
+pub fn probe(provider: &Provider) -> Result<Duration> {
+    let agent = pooled_agent();
+    let started = std::time::Instant::now();
+    let mut first: Option<Duration> = None;
+    let done = request(
+        &agent,
+        provider,
+        "Reply with the single word OK.",
+        "OK?",
+        8,
+        1,
+        &AtomicU64::new(1),
+        &mut |_| {
+            first.get_or_insert_with(|| started.elapsed());
+            Ok(())
+        },
+    )?;
+    match (done, first) {
+        (true, Some(ttft)) => Ok(ttft),
+        _ => bail!("the provider answered without any text"),
+    }
+}
+
 /// Every turn goes to the same host, so the connection should be opened once.
 ///
 /// `ureq::post` is documented as running on a *use-once* agent: it paid a fresh
@@ -693,6 +723,17 @@ mod tests {
         assert_eq!(
             body(&refused(), RESEARCH_PROMPT, "u", RESEARCH_MAX_TOKENS)["max_tokens"],
             2_000
+        );
+    }
+
+    #[test]
+    fn probe_reports_a_refused_provider_as_an_error_not_a_hang() {
+        let started = std::time::Instant::now();
+        let err = probe(&refused()).unwrap_err().to_string();
+        assert!(!err.is_empty());
+        assert!(
+            started.elapsed() < Duration::from_secs(30),
+            "a dead endpoint must fail fast"
         );
     }
 }
