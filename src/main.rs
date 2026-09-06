@@ -171,12 +171,12 @@ struct Args {
     #[arg(long, env = "IV_ALPHA", default_value_t = 240)]
     alpha: u8,
 
-    /// Route F8 research through this Codex .exe instead of the provider (no shell command strings)
+    /// Route F8 research through this CLI .exe instead of the provider (codex.exe or Claude Code's claude.exe; no shell command strings)
     #[arg(long, env = "IV_AGENT_CMD")]
     agent_cmd: Option<std::path::PathBuf>,
 
-    /// Working directory for read-only research
-    #[arg(long, env = "IV_AGENT_ROOT", default_value = "knowledge")]
+    /// Working directory for read-only research; knowledge/ and references/ live under it
+    #[arg(long, env = "IV_AGENT_ROOT", default_value = ".")]
     agent_root: std::path::PathBuf,
 
     /// Maximum research duration in seconds
@@ -538,7 +538,7 @@ fn main() -> Result<()> {
                 executable
                     .extension()
                     .is_some_and(|e| e.eq_ignore_ascii_case("exe")),
-                "--agent-cmd must be a Codex .exe, not a shell script"
+                "--agent-cmd must be an .exe (codex.exe, or Claude Code's bin\\claude.exe), not a shell script"
             );
             let root = args
                 .agent_root
