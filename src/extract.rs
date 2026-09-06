@@ -212,8 +212,6 @@ fn ocr(path: &Path) -> Result<String> {
 /// like `ocr` it needs COM initialised on the calling thread — Wave 3's
 /// `--setup` must call it after `initialize_mta()`, or it reports "no OCR"
 /// on a machine that has one.
-// `--setup` (Wave 3) is the consumer; the allow goes with it.
-#[allow(dead_code)]
 pub fn ocr_available() -> bool {
     windows::Media::Ocr::OcrEngine::TryCreateFromUserProfileLanguages().is_ok()
 }

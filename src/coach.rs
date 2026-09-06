@@ -31,9 +31,6 @@ const RESEARCH_MAX_TOKENS: u32 = 2_000;
 /// that the configured provider answers and how fast — the same number the
 /// status line shows as `first word` on a call, so a user choosing between
 /// providers compares like with like.
-// Nothing in the bin build calls it until `--setup` lands; holding the function
-// back until then would only merge two changes that are cleaner apart.
-#[allow(dead_code)]
 pub fn probe(provider: &Provider) -> Result<Duration> {
     let agent = pooled_agent();
     let started = std::time::Instant::now();

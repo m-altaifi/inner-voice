@@ -294,7 +294,7 @@ fn params(prompt: &str) -> FullParams<'static, 'static> {
 /// it lands on whatever the other side says first, which is the worst possible
 /// moment. Doing it here spends that during the VAD's calibration second, while
 /// the call is still being joined.
-fn warm(state: &mut WhisperState) {
+pub fn warm(state: &mut WhisperState) {
     let _ = state.full(params(""), &vec![0f32; RATE]); // output is not the point
 }
 

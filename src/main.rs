@@ -17,6 +17,7 @@ mod provider;
 mod references;
 mod roster;
 mod search;
+mod setup;
 mod speak;
 mod voiceid;
 
@@ -207,6 +208,11 @@ struct Args {
     /// List the apps with audio on the loopback device and exit
     #[arg(long)]
     list_apps: bool,
+
+    /// Check every prerequisite — model, CUDA, devices, provider (one tiny
+    /// request, timed), OCR, folders — print ✓/✗ with the fix, and exit
+    #[arg(long)]
+    setup: bool,
 }
 
 fn parse_gate(value: &str) -> std::result::Result<f32, String> {
@@ -219,7 +225,11 @@ fn parse_gate(value: &str) -> std::result::Result<f32, String> {
     Ok(gate)
 }
 
-fn pick(enumerator: &DeviceEnumerator, dir: Direction, name: &Option<String>) -> Result<Device> {
+pub(crate) fn pick(
+    enumerator: &DeviceEnumerator,
+    dir: Direction,
+    name: &Option<String>,
+) -> Result<Device> {
     match name {
         Some(n) => enumerator
             .get_device_collection(&dir)?
@@ -575,6 +585,32 @@ fn main() -> Result<()> {
         }
         println!("\n--hear takes any part of a name; an active one wins.");
         return Ok(());
+    }
+
+    // Stays here, below `initialize_mta()`: `extract::ocr_available()` activates
+    // WinRT and would report "no OCR" on a machine that has one if COM were not
+    // already up on this thread.
+    if args.setup {
+        // The provider line inherits the pooled agent's 60 s timeout, so a
+        // provider that connects and then stalls otherwise looks like a hang.
+        println!(
+            "\ninner-voice --setup — checking; the provider line waits for one reply (up to 60 s)…"
+        );
+        let checks = setup::run(
+            &setup::Inputs {
+                whisper: args.whisper.clone(),
+                provider: args.provider.clone(),
+                model: args.model.clone(),
+                mic: args.mic.clone(),
+                loopback: args.loopback.clone(),
+                knowledge: args.knowledge.clone(),
+                references: args.references.clone(),
+                agent_cmd: args.agent_cmd.as_ref().map(|p| p.display().to_string()),
+            },
+            &enumerator,
+        );
+        print!("\n{}", setup::render(&checks));
+        std::process::exit(if setup::all_ok(&checks) { 0 } else { 1 });
     }
 
     // `none` runs everything except the coach: capture, VAD, whisper, naming,
