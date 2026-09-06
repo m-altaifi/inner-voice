@@ -1631,6 +1631,7 @@ dependencies = [
  "knf-rs",
  "ort",
  "pdf-extract",
+ "quick-xml",
  "raw-window-handle",
  "serde_json",
  "ureq",
@@ -1638,6 +1639,7 @@ dependencies = [
  "whisper-rs",
  "windows",
  "winit",
+ "zip",
 ]
 
 [[package]]

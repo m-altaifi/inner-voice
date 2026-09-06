@@ -9,7 +9,7 @@ use std::fmt::Write as _;
 use std::path::Path;
 
 /// What `text` accepts, for error messages and `--setup`.
-pub const FORMATS: &str = "TXT, Markdown, CSV, an Excel/OpenDocument spreadsheet, or PDF";
+pub const FORMATS: &str = "TXT, Markdown, CSV, an Excel/OpenDocument spreadsheet, PDF, or DOCX";
 
 fn extension(path: &Path) -> String {
     path.extension()
@@ -22,7 +22,7 @@ fn extension(path: &Path) -> String {
 pub fn supported(path: &Path) -> bool {
     matches!(
         extension(path).as_str(),
-        "txt" | "md" | "csv" | "xlsx" | "xlsm" | "xls" | "ods" | "pdf"
+        "txt" | "md" | "csv" | "xlsx" | "xlsm" | "xls" | "ods" | "pdf" | "docx"
     )
 }
 
@@ -33,6 +33,7 @@ pub fn text(path: &Path) -> Result<String> {
         "csv" => csv_to_text(path),
         "xlsx" | "xlsm" | "xls" | "ods" => sheet_to_text(path),
         "pdf" => pdf(path),
+        "docx" => docx(path),
         _ => bail!("unsupported format; use {FORMATS}"),
     }
 }
@@ -73,6 +74,56 @@ fn pdf(path: &Path) -> Result<String> {
         bail!("no text layer; export pages as images for OCR");
     }
     Ok(text)
+}
+
+/// Word's own XML, not a `docx` crate: it is a zip holding
+/// `word/document.xml`, and the two crates that read those are already in the
+/// tree under calamine. Paragraphs become lines; inside a table, cells become
+/// tab-separated columns and rows become lines.
+fn docx(path: &Path) -> Result<String> {
+    use quick_xml::events::Event;
+    use std::io::Read as _;
+    let file = std::fs::File::open(path)?;
+    let mut archive = zip::ZipArchive::new(file).context("not a DOCX (zip) file")?;
+    let mut xml = String::new();
+    archive
+        .by_name("word/document.xml")
+        .context("not a DOCX: no word/document.xml inside")?
+        .read_to_string(&mut xml)?;
+    let mut reader = quick_xml::Reader::from_str(&xml);
+    let mut out = String::new();
+    let mut in_cell = 0usize;
+    loop {
+        match reader.read_event()? {
+            Event::Eof => break,
+            Event::Text(t) => out.push_str(&t.decode()?),
+            // 0.41 delivers `&amp;` and `&#8217;` as their own event, not inside
+            // the surrounding text.
+            Event::GeneralRef(r) => {
+                out.push_str(&quick_xml::escape::unescape(&format!("&{};", r.decode()?))?)
+            }
+            Event::Empty(e) if e.name().as_ref() == b"w:tab" => out.push('\t'),
+            Event::Empty(e) if e.name().as_ref() == b"w:br" => out.push('\n'),
+            Event::Start(e) if e.name().as_ref() == b"w:tc" => in_cell += 1,
+            Event::End(e) => match e.name().as_ref() {
+                // A paragraph inside a cell is still one cell: keep the row on one line.
+                b"w:p" if in_cell > 0 => out.push(' '),
+                b"w:p" => out.push('\n'),
+                b"w:tc" => {
+                    in_cell = in_cell.saturating_sub(1);
+                    // Trim the paragraph's trailing space before the column break.
+                    while out.ends_with(' ') {
+                        out.pop();
+                    }
+                    out.push('\t');
+                }
+                b"w:tr" => out.push('\n'),
+                _ => {}
+            },
+            _ => {}
+        }
+    }
+    Ok(out)
 }
 
 /// Flatten a spreadsheet to `key: value` lines.
@@ -196,5 +247,36 @@ mod tests {
         let err = text(&scan).unwrap_err().to_string();
         assert!(err.contains("no text layer"), "{err}");
         assert!(supported(&pdf));
+    }
+    /// The smallest thing Word would call a document: a zip holding
+    /// `word/document.xml`. Built here with the same `zip` crate the reader
+    /// uses, so the test needs no fixture file.
+    fn tiny_docx(document_xml: &str) -> std::path::PathBuf {
+        use std::io::Write as _;
+        let path = scratch("f.docx");
+        let file = std::fs::File::create(&path).unwrap();
+        let mut zip = zip::ZipWriter::new(file);
+        zip.start_file(
+            "word/document.xml",
+            zip::write::SimpleFileOptions::default(),
+        )
+        .unwrap();
+        zip.write_all(document_xml.as_bytes()).unwrap();
+        zip.finish().unwrap();
+        path
+    }
+    #[test]
+    fn docx_paragraphs_become_lines_and_cells_become_columns() {
+        let path = tiny_docx(
+            r#"<?xml version="1.0" encoding="UTF-8"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>Rollback owner</w:t></w:r><w:r><w:t xml:space="preserve"> is Sarah &amp; team</w:t></w:r></w:p><w:tbl><w:tr><w:tc><w:p><w:r><w:t>Target</w:t></w:r></w:p></w:tc><w:tc><w:p><w:r><w:t>20 minutes</w:t></w:r></w:p></w:tc></w:tr></w:tbl></w:body></w:document>"#,
+        );
+        let out = text(&path).unwrap();
+        let lines: Vec<&str> = out.lines().collect();
+        assert_eq!(lines[0], "Rollback owner is Sarah & team", "{out:?}");
+        assert!(lines[1].starts_with("Target\t20 minutes"), "{out:?}");
+        assert!(supported(&path));
+        let junk = scratch("g.docx");
+        std::fs::write(&junk, b"not a zip").unwrap();
+        assert!(text(&junk).unwrap_err().to_string().contains("DOCX"));
     }
 }
