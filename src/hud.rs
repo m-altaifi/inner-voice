@@ -447,6 +447,8 @@ impl State {
                         || text.starts_with("coach:")
                         || text.starts_with("research off")
                         || text.starts_with("Preview")
+                        || text.starts_with("hearing:")
+                        || text.starts_with("speak:")
                     {
                         self.notice = text.clone();
                     }
@@ -493,9 +495,16 @@ impl State {
                 }
                 Msg::ToolEnd(id, result) if id == self.research_id => {
                     self.researching = false;
+                    // "finished" over a cancelled or failed job contradicts the
+                    // pane the same sentence sends you to, and F8 is one key
+                    // away from it — so the notice follows the outcome.
+                    self.notice = match &result {
+                        Ok(_) => "Research finished — Ctrl+Shift+F8 shows it.",
+                        Err(_) => "Research stopped — Ctrl+Shift+F8 shows why.",
+                    }
+                    .into();
                     self.research =
                         result.unwrap_or_else(|e| format!("Research couldn't finish\n\n{e}"));
-                    self.notice = "Research finished — Ctrl+Shift+F8 shows it.".into();
                 }
                 _ => {}
             }

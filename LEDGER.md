@@ -7,6 +7,44 @@ Update the **Now** block after every work session. Nothing else here is chronolo
 
 ## Now
 
+**Wave 1 — glance & hearing (2026-09-06):** Decision 7 back in egui (`Tag` for
+the colours, `status_text` for the wait as a number, TTFT timing), all unit
+tested and the instrument asserted by `ui_smoke.ps1`.
+
+Per-app capture: `--hear <app>` opens a process-loopback client on the app's
+process tree, reacquires when it starts late or restarts (`alive(pid)` polled
+every 2 s — a dead target delivers silence, not an error), and falls back to the
+endpoint mix if the client cannot open. The spike needed only attempt 1: polling
+shared mode, 16 kHz mono f32 with `autoconvert`, exactly like the endpoint path.
+No event-driven client and no decimator were needed, written or committed.
+
+An app stream is *not* calibrated. It starts only when the app plays, so the
+calibration second lands on the first **sentence** — measured once at gate
+0.5942, which then produced zero turns until `--sys-gate` was forced. It is the
+app's own digital output and has no noise floor to measure, so it takes
+`GATE_FLOOR` (0.004) unless `--sys-gate` overrides; the endpoint mix, and the
+fallback to it, still calibrate. Verified live: `THEM gate 0.0040 (fixed)` and
+speech transcribed with no `--sys-gate`.
+
+The `--speak` mute follows `--speak`, not `--hear`: the mute `Arc` exists
+whenever `--speak` is on, the process-loopback feed opts out (`mute: None`)
+because the voice is another process, and both endpoint pumps — the `--hear`
+fallback included — stay deafened while the voice talks. So the mute only ever
+bites where an endpoint stream *is* `THEM`: `--speak` without `--hear`, which the
+panel warns about at startup, or `--hear` whose app client could not open.
+
+Research runs over HTTP on its own worker whenever a provider is online
+(`Coach::research`, exactly one `ToolEnd` per job by CAS). Its ids are seeded at
+`1 << 32` because `agent.rs` mints `ToolStart` ids from 0 on the same channel;
+the router also makes the two lanes mutually exclusive per session, so a
+collision needs both belts to fail. The CLI lane still wins when `--agent-cmd`
+is set, and is still unverified against a real Codex.
+
+Verified: the unit ladder, `ui_smoke.ps1` (which now asserts the TTFT
+instrument), and a live Gemini run of the HTTP research lane. Not yet:
+`tools/hear_isolation.ps1` (two processes speaking, only the named one becoming
+`THEM`) is unwritten, and the drag gesture and a real call still need a human.
+
 **Hotkey pass (2026-09-05):** Deleted every BUTTON control. The panel is now
 status line, notice line, scrollable read-only body, one-line question box — and
 `KEYS` in `src/hud.rs`, one `RegisterHotKey` per action on Ctrl+Shift+F1..F11:
@@ -477,6 +515,9 @@ Do not re-litigate these. Each replaces a more expensive option.
    tiers also throttle without warning (`gemini-3.8-flash` returned 503 on every
    attempt). Flip back by setting `IV_PROVIDER=anthropic` and commenting out
    `IV_MODEL`.
+   *Amended 2026-09-06: providers are choices; Gemini free is the default; no
+   production credential is required to run. Claude direct remains the only wire
+   with prompt caching.*
 5. **Slow lane shells out to installed CLIs. Fast lane never does.** `opencode run` / `claude -p` / `codex exec` already have providers, tools, file access and sessions — rebuilding that in Rust is the single biggest waste available here. But measured: opencode costs **562 ms to spawn before it sends a byte**, against a whole-loop budget of ~1,200 ms. It is disqualified from the fast lane on arithmetic.
    *Would change if:* `opencode serve` runs persistently (erases spawn cost) **and** its injected agent prompt proves cheap enough. Even then the fast lane wants a ~300-token system prompt under our control, which is ~50 lines of direct HTTP.
 6. **Memory = bounded deque + append-only JSONL.** No vector DB, no embeddings, no RAG until a real retrieval failure exists.
@@ -488,8 +529,10 @@ Do not re-litigate these. Each replaces a more expensive option.
    - **Miller**: transcript capped at 6 lines, `THEM` brighter than `YOU` because `THEM` is what you react to.
    - Monospaced digits for the timer (it would twitch otherwise); `esc to close` shows for 10 s then leaves — a permanent hint is permanent noise.
 
-   *Painted-HUD era. The pixel rules are history and Escape no longer closes
-   anything (see 8); "a glance, not a screen" still holds.*
+   *Restored in egui 2026-09-06 (Wave 1): the wait as a number, ASK/FIX-only
+   saturation, THEM brighter than YOU, greyed-while-thinking, hint that leaves.
+   The 6-line transcript cap is superseded by the user's 8-turn floor. The pixel
+   measurements are still history, and Escape no longer closes anything (see 8).*
 8. **The panel is hotkey-driven; the buttons were removed. Do not put them back.**
    It is an always-on-top overlay used while the *call* app owns the keyboard, so
    a control that must be focused to be pressed is a control that costs the call —
@@ -502,6 +545,16 @@ Do not re-litigate these. Each replaces a more expensive option.
    reported in the notice line and Diagnostics instead of leaving a key that does
    nothing. Quit deliberately has no key: Alt+F4 already closes and is muscle
    memory, and an F-key next to a live action is one fumble from ending the call.
+9. **On-disk is the source of truth (2026-09-06).** The app never coaches from
+   a stale copy. `knowledge/` reloads on change, references live in a folder
+   and reload, dropped files are remembered by path and never copied. (Wave 2
+   implements this; recorded here because Wave 1's research design assumes it.)
+10. **Capture is per-app when an app is named (2026-09-06).** `--hear <app>`
+    captures only that process tree as `THEM`; the endpoint mix is the
+    fallback. The `--speak` voice is another process and is therefore never
+    heard, so the loopback mute survives in exactly one combination: `--speak`
+    without `--hear` — or with it, when the app client could not open and the
+    endpoint mix is standing in.
 
 ---
 

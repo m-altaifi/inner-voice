@@ -166,7 +166,7 @@ struct Args {
     #[arg(long, env = "IV_ALPHA", default_value_t = 240)]
     alpha: u8,
 
-    /// Enable F8 research using this Codex .exe (no shell command strings)
+    /// Route F8 research through this Codex .exe instead of the provider (no shell command strings)
     #[arg(long, env = "IV_AGENT_CMD")]
     agent_cmd: Option<std::path::PathBuf>,
 

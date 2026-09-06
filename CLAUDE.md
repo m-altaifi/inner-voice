@@ -40,7 +40,11 @@ table: one `RegisterHotKey` per row on Ctrl+Shift+F1..F12, dispatched by
 posts as `WM_HOTKEY`. The conversation pane grows with the transcript up to
 `VISIBLE_TURNS` (8) rows and advice takes the rest. Auto-scroll is `ScrollArea::stick_to_bottom`,
 which also re-sticks when a reader scrolls back to the end — the hand-written
-Win32 version could not. The *whole* window is the drag grip (`hit_test` returns
+Win32 version could not. Decision 7's glance rules are in `Tag` (colours) and
+`status_text` (the wait as a number, which doubles as the standing TTFT
+instrument); both are tested. `THEM` capture is per-app when `--hear` names one
+(`audio::open_process` on the app's process tree), with reacquire when it starts
+late or restarts; the endpoint mix is the fallback. The *whole* window is the drag grip (`hit_test` returns
 `Grab::Move` for anything that is not a resize edge), which is why
 `style.interaction.selectable_labels` is off: text selection would swallow the
 gesture, and it was dead weight anyway since a `WS_EX_NOACTIVATE` window never
@@ -67,7 +71,12 @@ audio/network (its research keys are not registered). `tools/ui_smoke.ps1` check
 this preview only, and needs `IV_UI_DUMP` set to a path before launch: no child
 controls exist to read with `GetDlgItem` any more, so the panel mirrors its
 *state* to that file — deliberately not its render, which would be a second copy
-of the layout free to disagree with the screen. Screenshots cover the drawing. Pause changes an audio epoch, and `audio.rs` discards queued
+of the layout free to disagree with the screen. Screenshots cover the drawing.
+`Msg::Sys` lines are panel-only: they land in Diagnostics (Ctrl+Shift+F4) and are
+never written to the JSONL log — `route` records `COACH`, `RESEARCH` and turns
+and drops `Sys` — so the mirror's `notice` carries only what `pump`'s prefix
+filter admits (`hearing:`, `speak:`, `coach:`, `research off`, `Preview`, and
+anything saying "failed" or "stopped"). Pause changes an audio epoch, and `audio.rs` discards queued
 and in-flight work from earlier epochs — but only up to `Msg::Turn`. A `Turn`
 carries no epoch, and `Msg::Pause` travels the same FIFO behind it, so one turn
 captured just before the pause still lands. Do not describe pause as a hard
@@ -198,13 +207,35 @@ Traps here, each already paid for once (see LEDGER):
   combination itself and requiring failure, and prints an explicit SKIPPED line
   when injection is unavailable rather than passing quietly. The drag gesture
   has no substitute: `hit_test` is unit-tested, and the gesture needs a human.
+- **A process-loopback stream whose app exits delivers silence, not an error.**
+  `audio::pump` therefore polls `alive(pid)` every 2 s and bails, which is what
+  lets `run`'s reacquire loop hook the app again under its new pid. Do not
+  "simplify" that poll away; the stream will look healthy forever.
+- **A process-loopback stream must not be calibrated.** It starts only when the
+  app plays, so the calibration second lands on the first *sentence* — measured
+  once at gate 0.5942, which then gated every later turn out and produced zero
+  turns until `--sys-gate` was forced. It is the app's own digital output and has
+  no noise floor to measure, so `app_feed` pins `GATE_FLOOR` (0.004) unless
+  `--sys-gate` overrides. The endpoint mix, *and the fallback to it*, still
+  calibrate. Verified live: `THEM gate 0.0040 (fixed)` and speech transcribed
+  with no `--sys-gate`.
+- **The `--speak` mute follows `--speak`, not `--hear`.** The mute `Arc` exists
+  whenever `--speak` is on; the process-loopback feed opts out (`mute: None`)
+  because the voice is another process and deafening that stream would only lose
+  the far end. Both endpoint pumps — including the fallback taken when the app
+  client cannot open — stay deafened while the voice talks, or the panel coaches
+  on its own advice.
 - **Research has never been run against the real Codex CLI.** `agent.rs` extracts
   the answer via `event["item"]["type"] == "agent_message"`; if Codex actually
   tags that field `item_type`, every research returns "no answer" and the whole
   feature is inert. Nothing offline can settle it — one real `codex exec --json`
   capture can. The no-answer error quotes the first output line so a shape
   mismatch reads as a mismatch instead of silence. Do not "fix" the schema by
-  guessing; get the capture.
+  guessing; get the capture. The CLI is no longer the only lane — F8 runs over
+  the coaching provider by default (`Coach::research`) and that lane *has* been
+  run live against Gemini; `--agent-cmd` switches to the CLI, and the router
+  keeps exactly one lane live per session. So the risk is now confined to
+  `agent.rs`, not to the feature.
 - **Every `AdviceStart` must get an `AdviceEnd`.** `ask` supersedes by announcing
   a *newer* generation, so the panel moves on by itself; `cancel` has no
   successor and must close the generation it retires, or the panel sits on

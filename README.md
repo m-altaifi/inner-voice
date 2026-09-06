@@ -70,12 +70,11 @@ answer it; it grows to at least the last eight turns and scrolls for more.
 | Ctrl+Shift+F11 | This list |
 | Ctrl+Shift+F12 | Pin the panel where it is |
 
-Ctrl+Shift+F11 shows the same list inside the panel, and the status line always
-carries that reminder. The research keys register whenever a coaching provider
-is online or `--agent-cmd` is set; `--provider none` with no CLI leaves them
-unregistered. Ctrl+Shift+F7 puts the caret in the question box; Enter sends,
-Escape clears it. Escape does not close anything. Quit has no hotkey on purpose:
-Alt+F4 closes the window.
+Ctrl+Shift+F11 shows the same list inside the panel. The research keys register
+whenever a coaching provider is online or `--agent-cmd` is set; `--provider none`
+with no CLI leaves them unregistered. Ctrl+Shift+F7 puts the caret in the
+question box; Enter sends, Escape clears it. Escape does not close anything.
+Quit has no hotkey on purpose: Alt+F4 closes the window.
 
 Hotkeys are process-wide and first come, first served. If another app already
 owns one of these combinations, registration fails; the panel then names the lost
@@ -83,6 +82,14 @@ keys in the notice line and in Diagnostics. Free the key in the other app.
 
 Both panes follow new content to the newest line and stop following as soon as
 you scroll up to re-read; scroll back to the end and they resume.
+
+The status line counts the wait for advice — `thinking 1.4s` while the model
+works, then `first word 1.2s`, which is the time to first token on that turn
+and stays up until the next one. `ASK` and `FIX` headings are the only saturated
+colour; `SAY` is soft green and `NOTE` recedes. `THEM` is brighter than `YOU`
+because `THEM` is what you react to. The last turn's advice stays on screen,
+greyed, until the next replaces it. The `Ctrl+Shift+F11` reminder leaves the
+status line after ten seconds.
 
 Drag anywhere on the panel to move it — there is no title strip to aim for, and
 the panel is meant to sit wherever the call is not. An edge or corner resizes.
@@ -123,11 +130,14 @@ last result back up; pressing it again while that result is already on screen
 starts a fresh job.
 
 With a coaching provider online and no `--agent-cmd`, research runs over the same
-HTTP provider on its own lane — a second worker with its own generation counter,
-so a long answer never queues in front of the ~1 s advice. It reads the newest
-THEM line against a wider slice of your reference files than a glance gets, and
-answers under `research.md` if that file exists beside `prompt.md`, otherwise
-under a built-in prompt (`--research-prompt`, `IV_RESEARCH_PROMPT`).
+connection as advice — no CLI needed — on its own lane: a second worker with its
+own generation counter, so a long answer never queues in front of the ~1 s
+advice. It gets the whole 24-turn window, the newest THEM line matched against up
+to forty reference passages instead of the four a glance gets, and five times the
+token budget an advice turn is allowed. It answers under `research.md` if that
+file is in the launch directory, otherwise under a built-in prompt
+(`--research-prompt`, `IV_RESEARCH_PROMPT`; `--research-prompt` resolves on its
+own, not relative to `--prompt`).
 
 Setting `--agent-cmd` switches research to a Codex CLI instead; the CLI wins
 wherever it is configured, so exactly one lane is live per session. To use it,
@@ -159,8 +169,8 @@ live against Gemini.
 
 Research needs a provider or a CLI, so `--provider none` with neither leaves it
 off. Speech never triggers it; the fast coach has no tools. This release supports
-Codex. Historical Claude/OpenCode adapters in the ledger remain future
-alternatives.
+Codex as the CLI adapter. Historical Claude/OpenCode adapters in the ledger
+remain future alternatives.
 
 ## File search
 
@@ -187,6 +197,25 @@ Keep quiet during the first calibration second. Override with `--mic-gate 0.02`
 or `--sys-gate 0.02` if needed (values strictly between 0 and 1).
 Whisper transcribes English with beam search and a full encoder window.
 
+To hear only your call app — and not the video you are watching, the music, or
+the voice this app reads advice in — name it: `--hear discord` (any part of the
+name, case-insensitive; `--list-apps` shows what is playing). `THEM` is then that
+app's process tree alone. If the app is not running yet the panel says
+`hearing: waiting for discord…` and hooks it when it starts; if it restarts, the
+panel follows it to its new process. If the app stream cannot be opened at all it
+falls back to the whole speaker mix and says so. Without `--hear`, `THEM` is
+everything the speakers play.
+
+An app stream is that app's own digital output, so there is no room noise to
+measure and no calibration second: it takes the floor gate (0.004) and reports
+`THEM gate 0.0040 (fixed)` in Diagnostics. `--sys-gate` still overrides it. The
+speaker-mix path — including the fallback — calibrates as before.
+
+`--speak` reads advice aloud, and is off unless set (`.env.example` ships it on).
+With `--hear` the voice is another process and is never captured; without it the
+call is deafened while the voice talks and remote speech can be lost — the panel
+says so at startup, and adding `--hear` is the fix.
+
 Optional far-end speaker identification:
 
 ```powershell
@@ -195,8 +224,7 @@ curl.exe -fL -o models/campplus_sv_en_voxceleb_16k.onnx https://github.com/k2-fs
 
 Names come from `knowledge/attendees.csv` and introductions/direct address.
 Uncertain matches stay `THEM`. Thresholds (0.70/0.50) remain unvalidated on real
-calls; collect `--dump clips` audio before tuning them. `--speak` is off by default:
-it mutes loopback transcription while reading advice and can lose remote speech.
+calls; collect `--dump clips` audio before tuning them.
 
 Coaching sends transcript and knowledge to the provider. Audio stays local.
 Logs default to `logs/`; `IV_LOG=` disables them. Audio dumps are opt-in.
