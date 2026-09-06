@@ -304,9 +304,9 @@ fn refresh_corpus(
 ) {
     match corpus.refresh() {
         Ok(true) => {
-            // `attendees.csv` is in the same folder, so Decision 9 covers it:
-            // read only at startup, a name added mid-call never binds and the
-            // "knowledge reloaded" notice overstates what actually refreshed.
+            // `attendees.csv` is in this same folder, and on-disk is the source
+            // of truth (Decision 9) — so a name added mid-call binds from the
+            // next turn, rather than waiting for a restart.
             *roster = roster::Roster::load(corpus.dir());
             if let Some(coach) = coach {
                 coach.set_prompt(build_prompt(persona, &corpus.text));
