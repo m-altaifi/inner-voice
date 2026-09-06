@@ -41,9 +41,11 @@ collision needs both belts to fail. The CLI lane still wins when `--agent-cmd`
 is set, and is still unverified against a real Codex.
 
 Verified: the unit ladder, `ui_smoke.ps1` (which now asserts the TTFT
-instrument), and a live Gemini run of the HTTP research lane. Not yet:
-`tools/hear_isolation.ps1` (two processes speaking, only the named one becoming
-`THEM`) is unwritten, and the drag gesture and a real call still need a human.
+instrument), a live Gemini run of the HTTP research lane, and
+`tools/hear_isolation.ps1` — two processes speaking different sentences through
+the speakers at once, only the named one becoming `THEM`. It passed on the
+first run: `PASS: --hear pwsh heard the elephant and not the giraffe`. Not yet:
+the drag gesture and a real call still need a human.
 
 **Hotkey pass (2026-09-05):** Deleted every BUTTON control. The panel is now
 status line, notice line, scrollable read-only body, one-line question box — and
