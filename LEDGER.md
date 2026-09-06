@@ -7,6 +7,24 @@ Update the **Now** block after every work session. Nothing else here is chronolo
 
 ## Now
 
+**Key swap (2026-09-06):** Ctrl+Shift+F10 was Clear references and is now the
+advice toggle. The allocation was backwards for an all-day panel: arming and
+muting advice is frequent and reversible, clearing references is rare and
+destructive, and a fumbled F-key mid-sentence should land on the recoverable
+one. Clearing kept its id and handler and moved to `/clear` in the question box.
+`COMMANDS` in `src/hud.rs` is the second table, rendered under the keys in the
+help view so both are in the one place a user looks; the typed `/coach on|off`
+was deleted rather than kept alongside the key, since the status line already
+shows the state a blind toggle would leave ambiguous.
+`every_action_is_reachable_by_exactly_one_key` now asserts an action never loses
+both a key and a command. `ui_smoke.ps1` still posts id 107 and is unaffected —
+it dispatches by id, not by key.
+
+Found while doing it: the launch commit's `set_current_dir` comment carried a
+literal CR in the middle of a `//` line (a `target` + `release` path mangled by
+escaping), which the previous build tolerated and this one would not. Repaired;
+`grep` confirms no other stray CR in `src/`.
+
 **Not call-shaped (2026-09-06):** the product is an always-on assistant for a
 working day, enabled manually — not a call coach. Nothing detected a call
 before, so the code needed one change rather than a rewrite: a far-end turn no

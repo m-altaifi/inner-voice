@@ -244,14 +244,24 @@ Traps here, each already paid for once (see LEDGER):
   has no substitute: `hit_test` is unit-tested, and the gesture needs a human.
 - **`--manual` is not Pause, and the two must not be merged.** Pause bumps the
   audio epoch and `route` drops the whole `Msg::Turn` — no log, no history, no
-  name binding — because "stop listening" is what it means. `--manual` /
-  `/coach off` only stops the *unbidden* `coach.ask`: the turn is still
+  name binding — because "stop listening" is what it means. `--manual` and
+  Ctrl+Shift+F10 only stop the *unbidden* `coach.ask`: the turn is still
   transcribed, named, logged and pushed to history, so arming advice later
   starts from a full 24-turn window rather than a blank one. This exists
   because the panel is meant to run for a working day, where advice on every
   overheard sentence is a bill and a distraction. `status_text` shows which
   state it is in — a muted coach and a dead one are otherwise the same picture,
   and `a_muted_coach_says_so_rather_than_looking_idle` guards that.
+- **A key or a command, never neither, and the split is not arbitrary.** F10
+  went from Clear references to the advice toggle because the toggle is
+  frequent and reversible while a clear is rare and destructive — a fumbled
+  F-key mid-sentence should reach the recoverable one. Clearing kept its `id`
+  and handler and moved to `/clear`. `COMMANDS` in `src/hud.rs` is that second
+  table, rendered under `KEYS` in the help view, and
+  `every_action_is_reachable_by_exactly_one_key` asserts an action never loses
+  both. A command is handled by whoever owns the state it changes: `/hear` in
+  `route` (it writes `Tune`), `/clear` in the panel (it also empties the
+  panel's import list, which `route` cannot reach).
 - **The app selector is a typed command, not a control.** `/hear` is parsed in
   `route()`'s `Msg::Question` arm because F7's box is the only place in a
   no-controls panel where a name can be typed — and unlike a picker of what is

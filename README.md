@@ -100,7 +100,7 @@ answer it; it grows to at least the last eight turns and scrolls for more.
 | Ctrl+Shift+F7 | Type a question (Enter sends, Esc cancels) |
 | Ctrl+Shift+F8 | Research the last turn |
 | Ctrl+Shift+F9 | Cancel research |
-| Ctrl+Shift+F10 | Clear references |
+| Ctrl+Shift+F10 | Advice: armed / on request only |
 | Ctrl+Shift+F11 | This list |
 | Ctrl+Shift+F12 | Pin the panel where it is |
 
@@ -274,8 +274,8 @@ advising: turns are still transcribed, named, logged and kept in the 24-turn
 history, so the moment you arm it the coach already knows what has been said.
 Advice comes from F7 (ask a question) and F8 (research) until then.
 
-Arm and mute it from the question box with `/coach on` and `/coach off`. The
-status line always says which state it is in — `Listening · advice on request
+Ctrl+Shift+F10 arms and mutes it. The status line always says which state it
+is in — `Listening · advice on request
 (F7/F8)` versus `Listening · <model>` — because otherwise a quiet coach and a
 broken one look identical.
 

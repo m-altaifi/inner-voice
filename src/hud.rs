@@ -53,6 +53,7 @@ const PAUSE: usize = 105;
 const RESEARCH: usize = 106;
 const CLEAR: usize = 107;
 const ASK: usize = 108;
+const COACH: usize = 109;
 const CANCEL: usize = 110;
 const MINIMIZE: usize = 111;
 const CLOSE: usize = 112;
@@ -161,9 +162,19 @@ const KEYS: [(u32, usize, &str); 12] = [
     ),
     (VK_F8.0 as u32, RESEARCH, "Research the last turn"),
     (VK_F9.0 as u32, CANCEL, "Cancel research"),
-    (VK_F10.0 as u32, CLEAR, "Clear references"),
+    (VK_F10.0 as u32, COACH, "Advice: armed / on request only"),
     (VK_F11.0 as u32, HELP, "This list"),
     (VK_F12.0 as u32, PIN, "Pin the panel where it is"),
+];
+
+/// Typed into the question box (Ctrl+Shift+F7), for the actions a key would be
+/// the wrong shape for: ones that need a *name*, and ones destructive enough
+/// that a fumbled F-key mid-sentence should not reach them.
+const COMMANDS: [(&str, &str); 4] = [
+    ("/hear", "report which apps are heard as THEM"),
+    ("/hear <app>[,<app>]", "hear only these; an app not yet running is waited for"),
+    ("/hear off", "back to the whole speaker mix"),
+    ("/clear", "clear references"),
 ];
 
 fn legend() -> Vec<(String, &'static str)> {
@@ -565,6 +576,13 @@ impl State {
                 let _ = self.tx.send(Msg::CancelResearch);
                 self.researching = false;
             }
+            // Frequent and reversible, unlike the key it took over. `route`
+            // owns the setting and echoes it back, which is what refreshes the
+            // notice and the status line.
+            COACH => {
+                self.coaching = !self.coaching;
+                let _ = self.tx.send(Msg::Coaching(self.coaching));
+            }
             CLEAR => {
                 self.session.references.clear();
                 self.imports.clear();
@@ -577,6 +595,15 @@ impl State {
             // first brings the caret here and only sends once there is text.
             ASK => {
                 let text = self.question.trim().to_string();
+                // Handled here rather than in `route`: a clear also empties the
+                // panel's own import list, which `route` cannot reach. Each
+                // command belongs to whoever owns the state it changes.
+                if text == "/clear" {
+                    self.question.clear();
+                    self.typing = false;
+                    self.command(CLEAR, ctx);
+                    return;
+                }
                 if text.is_empty() {
                     self.borrow_keyboard();
                 } else {
@@ -693,6 +720,18 @@ impl State {
                     egui::Grid::new("keys").spacing([18.0, 6.0]).show(ui, |ui| {
                         for (key, what) in legend() {
                             ui.label(RichText::new(key).color(ACCENT).monospace());
+                            ui.label(RichText::new(what).color(FG));
+                            ui.end_row();
+                        }
+                    });
+                    ui.add_space(10.0);
+                    ui.label(
+                        RichText::new("Typed in the question box (Ctrl+Shift+F7):").color(MUTED),
+                    );
+                    ui.add_space(6.0);
+                    egui::Grid::new("commands").spacing([18.0, 6.0]).show(ui, |ui| {
+                        for (command, what) in COMMANDS {
+                            ui.label(RichText::new(command).color(ACCENT).monospace());
                             ui.label(RichText::new(what).color(FG));
                             ui.end_row();
                         }
@@ -1227,6 +1266,17 @@ mod tests {
         // Quit has no key on purpose; Alt+F4 closes.
         assert!(!ids.contains(&CLOSE));
         assert!(ids.contains(&PIN));
+        // Clearing references gave up F10 to the advice toggle: it is rare and
+        // destructive, and the toggle is frequent and reversible, so a fumbled
+        // F-key mid-sentence should reach the reversible one. It must still be
+        // reachable *somehow* — an action with neither a key nor a command is
+        // dead code no user can run.
+        assert!(!ids.contains(&CLEAR), "F10 belongs to the advice toggle now");
+        assert!(
+            COMMANDS.iter().any(|(c, _)| *c == "/clear"),
+            "clearing references lost its key and must keep its command"
+        );
+        assert!(ids.contains(&COACH));
     }
     #[test]
     fn status_line_counts_the_wait_and_only_hints_early() {

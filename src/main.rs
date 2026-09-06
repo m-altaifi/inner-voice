@@ -212,8 +212,8 @@ struct Args {
     hear: Option<String>,
 
     /// Listen and log all day, but never advise unbidden: advice comes only
-    /// from F7 and F8. `/coach on` arms it for the session, `/coach off` mutes
-    /// it again. Pause (F5) is the other thing and stays that way — it stops
+    /// from F7 and F8. Ctrl+Shift+F10 arms and mutes it for the session.
+    /// Pause (F5) is the other thing and stays that way — it stops
     /// transcription outright, so nothing is written down either.
     #[arg(long, env = "IV_MANUAL")]
     manual: bool,
@@ -386,6 +386,16 @@ fn route(
 
     while let Ok(mut m) = rx.recv() {
         match &m {
+            Msg::Coaching(on) => {
+                coaching = *on;
+                // A muted coach must not leave a half-streamed answer on
+                // screen — `cancel` closes the generation it retires.
+                if !coaching && let Some(coach) = &coach {
+                    coach.cancel();
+                }
+                // Deliberately no `continue`: it falls through to the forward
+                // below, which is what tells the panel to redraw its state.
+            }
             Msg::Pause(value) => {
                 paused = *value;
                 if paused && let Some(coach) = &coach {
@@ -401,20 +411,6 @@ fn route(
                 // has not started yet.
                 if let Some(spec) = question.strip_prefix("/hear") {
                     set_hearing(&tune, &tx, spec.trim());
-                    continue;
-                }
-                if let Some(spec) = question.strip_prefix("/coach") {
-                    coaching = match spec.trim() {
-                        "on" => true,
-                        "off" => false,
-                        // Anything else reports. A typo must not silently arm
-                        // or mute an assistant that is meant to run all day.
-                        _ => coaching,
-                    };
-                    if !coaching && let Some(coach) = &coach {
-                        coach.cancel();
-                    }
-                    let _ = tx.send(Msg::Coaching(coaching));
                     continue;
                 }
                 refresh_corpus(&mut corpus, &mut roster, &persona, &coach, &tune, &tx);
@@ -593,17 +589,17 @@ fn local_answer(tx: &Sender<Msg>, references: &references::References, question:
 }
 
 fn main() -> Result<()> {
-    // Before Args::parse, so clap's `env` fallbacks see it. Walks up from the
-    // cwd, so running the exe from target/release still finds the repo's .env.
-    // Nine defaults below are relative — the model, prompt.md, research.md,
-    // knowledge/, references/, logs/, es.exe — so the app has only ever worked
+    // Before Args::parse, so clap's `env` fallbacks see it.
+    //
+    // Nine defaults below are relative -- the model, prompt.md, research.md,
+    // knowledge/, references/, logs/, es.exe -- so the app has only ever worked
     // when launched *from* the project directory. That is the whole reason
-    // starting it means typing a path instead of double-clicking something.
-    // `dotenv()` already walks up from the current directory to find `.env`;
+    // starting it meant typing a path instead of double-clicking something.
+    // `dotenv()` already walks up from the current directory to find `.env`, so
     // adopting that file's folder as the working directory costs one line and
-    // makes the exe sitting in `targetelease`, a pinned shortcut, and a shell
-    // in any subdirectory all resolve the same files. No `.env` found anywhere
-    // leaves the directory exactly as it was.
+    // makes the exe sitting in the release folder, a pinned shortcut, and a
+    // shell in any subdirectory all resolve the same files. No `.env` found
+    // anywhere leaves the directory exactly as it was.
     if let Ok(env) = dotenvy::dotenv()
         && let Some(root) = env.parent()
     {
