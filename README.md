@@ -71,8 +71,9 @@ answer it; it grows to at least the last eight turns and scrolls for more.
 | Ctrl+Shift+F12 | Pin the panel where it is |
 
 Ctrl+Shift+F11 shows the same list inside the panel, and the status line always
-carries that reminder. The research keys register only when research is
-configured. Ctrl+Shift+F7 puts the caret in the question box; Enter sends,
+carries that reminder. The research keys register whenever a coaching provider
+is online or `--agent-cmd` is set; `--provider none` with no CLI leaves them
+unregistered. Ctrl+Shift+F7 puts the caret in the question box; Enter sends,
 Escape clears it. Escape does not close anything. Quit has no hotkey on purpose:
 Alt+F4 closes the window.
 
@@ -119,8 +120,18 @@ planned; unsupported files receive an explicit error. This is not semantic searc
 
 Ctrl+Shift+F8 opens the research view. From any other view it just brings the
 last result back up; pressing it again while that result is already on screen
-starts a fresh job. To use it, install/authenticate Codex CLI, then configure its
-actual executable:
+starts a fresh job.
+
+With a coaching provider online and no `--agent-cmd`, research runs over the same
+HTTP provider on its own lane — a second worker with its own generation counter,
+so a long answer never queues in front of the ~1 s advice. It reads the newest
+THEM line against a wider slice of your reference files than a glance gets, and
+answers under `research.md` if that file exists beside `prompt.md`, otherwise
+under a built-in prompt (`--research-prompt`, `IV_RESEARCH_PROMPT`).
+
+Setting `--agent-cmd` switches research to a Codex CLI instead; the CLI wins
+wherever it is configured, so exactly one lane is live per session. To use it,
+install/authenticate Codex CLI, then configure its actual executable:
 
 ```powershell
 .\target\release\inner-voice.exe --agent-cmd 'C:\path\to\codex.exe' --agent-root knowledge
@@ -141,13 +152,15 @@ speech and stays available to later coaching turns, truncated to 2,000 character
 so it cannot crowd real speech out of the 24-turn window. A failed job is shown
 and logged but never enters that window.
 
-Research has not yet been exercised against a real Codex CLI, so treat its event
-parsing as unverified: if it returns "no answer", the error quotes the first line
-the CLI produced, which is the thing to report.
+The *CLI* lane has not yet been exercised against a real Codex CLI, so treat its
+event parsing as unverified: if it returns "no answer", the error quotes the first
+line the CLI produced, which is the thing to report. The HTTP lane has been run
+live against Gemini.
 
-Research is off by default and incompatible with `--provider none`. Speech never
-triggers it; the fast coach has no tools. This release supports Codex. Historical
-Claude/OpenCode adapters in the ledger remain future alternatives.
+Research needs a provider or a CLI, so `--provider none` with neither leaves it
+off. Speech never triggers it; the fast coach has no tools. This release supports
+Codex. Historical Claude/OpenCode adapters in the ledger remain future
+alternatives.
 
 ## File search
 

@@ -15,14 +15,8 @@ use std::time::Duration;
 const BETAS: &str = "fast-mode-2026-02-01,server-side-fallback-2026-07-01";
 const MAX_TOKENS: u32 = 400;
 
-// The `allow(dead_code)` here and on `Lane`, `research` and `cancel_research`
-// is because the panel's F8 wiring lands after this: the lane has tests but no
-// caller in the binary yet. Per item rather than a module-wide
-// `#![allow(dead_code)]`, so they come off with that wiring instead of hiding
-// real rot in `coach.rs` forever.
 /// The slow lane's system prompt. `research.md` beside `prompt.md` overrides
 /// it (read in `main`); this is what runs when that file is absent.
-#[allow(dead_code)]
 pub const RESEARCH_PROMPT: &str = "You are researching one moment of a live call for the user, who \
 reads a heads-up panel and decides what to say. Answer the question implied by the newest THEM \
 line, in depth: what is established, what is uncertain, and the one question that would settle \
@@ -64,7 +58,6 @@ pub struct Coach {
 /// The slow lane: its own worker, its own generation counter, one job at a
 /// time. It exists so that a 30 s research answer never queues behind or in
 /// front of the ~1 s advice the fast lane is for.
-#[allow(dead_code)]
 struct Lane {
     seq: Arc<AtomicU64>,
     /// The id whose `ToolStart` was announced and not yet closed, else 0.
@@ -118,7 +111,12 @@ impl Coach {
         });
         let research = {
             let (jobs, pending) = bounded::<(u64, String, String)>(1);
-            let seq = Arc::new(AtomicU64::new(0));
+            // Not 0: `agent::Agent` mints its `ToolStart`/`ToolEnd` ids from a
+            // counter that also starts at 1, down the same channel, into the
+            // one id slot the panel correlates on. Only one of the two lanes is
+            // ever wired up in a session, so a clash needs a bug to happen —
+            // and disjoint id spaces make it cost nothing when one does.
+            let seq = Arc::new(AtomicU64::new(1 << 32));
             let open = Arc::new(AtomicU64::new(0));
             let (rx, live, owner, output, provider) = (
                 pending.clone(),
@@ -191,7 +189,6 @@ impl Coach {
 
     /// Start a research job. Announces `ToolStart(id)` at once — the panel
     /// counts the wait — and returns the id so a caller can correlate.
-    #[allow(dead_code)]
     pub fn research(&self, system: String, context: String) -> u64 {
         let lane = &self.research;
         let id = lane.seq.fetch_add(1, Ordering::SeqCst) + 1;
@@ -208,7 +205,6 @@ impl Coach {
     /// generation it retires or the panel says "researching" forever. It only
     /// speaks when it wins the `open` token — a job the worker already
     /// finished, or nothing running at all, gets no second "cancelled" end.
-    #[allow(dead_code)]
     pub fn cancel_research(&self) {
         let lane = &self.research;
         let retired = lane.seq.fetch_add(1, Ordering::SeqCst);

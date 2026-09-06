@@ -106,6 +106,10 @@ struct Args {
     #[arg(long, env = "IV_PROMPT", default_value = "prompt.md")]
     prompt: String,
 
+    /// Research persona (F8). Falls back to a built-in prompt if missing.
+    #[arg(long, env = "IV_RESEARCH_PROMPT", default_value = "research.md")]
+    research_prompt: String,
+
     /// Folder of .md / .xlsx / .csv you teach it before the call
     #[arg(long, env = "IV_KNOWLEDGE", default_value = "knowledge")]
     knowledge: String,
@@ -253,6 +257,7 @@ fn bind(names: &mut HashMap<usize, String>, voice: usize, name: &str) {
 struct ContextServices {
     agent: Option<agent::Agent>,
     references: references::References,
+    research_prompt: String,
 }
 
 fn route(
@@ -264,11 +269,16 @@ fn route(
     roster: roster::Roster,
     services: ContextServices,
 ) {
-    let ContextServices { agent, references } = services;
+    let ContextServices {
+        agent,
+        references,
+        research_prompt,
+    } = services;
     let mut history = history::History::default();
     let mut names: HashMap<usize, String> = HashMap::new();
     // A name spoken in the previous turn, waiting to see who answers to it.
     let mut called: Option<String> = None;
+    let mut last_them = String::new();
     let mut advice = (0, String::new());
     let mut paused = false;
 
@@ -294,13 +304,28 @@ fn route(
                 }
                 continue;
             }
+            // The CLI wins where it is configured, so exactly one lane is live
+            // for the whole session and the two id spaces never interleave on
+            // the panel's single research slot.
             Msg::Research => {
+                let transcript = history.render();
                 if let Some(agent) = &agent {
-                    let transcript = history.render();
                     agent.ask(format!("{transcript}{}", references.retrieve(&transcript)));
+                } else if let Some(coach) = &coach {
+                    // Research the newest THEM line — that is the question the
+                    // user pressed F8 about — with the wide passage window.
+                    let query = if last_them.is_empty() {
+                        &transcript
+                    } else {
+                        &last_them
+                    };
+                    coach.research(
+                        research_prompt.clone(),
+                        format!("{transcript}{}", references.retrieve_deep(query)),
+                    );
                 } else {
                     let _ = tx.send(Msg::Sys(
-                        "research off: set --agent-cmd to a Codex executable".into(),
+                        "research off: needs a provider, or --agent-cmd".into(),
                     ));
                 }
                 continue;
@@ -308,6 +333,8 @@ fn route(
             Msg::CancelResearch => {
                 if let Some(agent) = &agent {
                     agent.cancel();
+                } else if let Some(coach) = &coach {
+                    coach.cancel_research();
                 }
                 continue;
             }
@@ -364,6 +391,9 @@ fn route(
             // here: "Sarah, what do you think?" is usually said by YOU, on the
             // other capture thread entirely.
             called = roster.addressed(text).map(str::to_string);
+            if who.is_them() {
+                last_them = text.clone();
+            }
 
             record(&log, &tx, who.label(), text);
             history.push(history::Turn::Speech {
@@ -610,7 +640,11 @@ fn main() -> Result<()> {
         Some(p) => format!("coach: {} {}", args.provider, p.model),
         None => "coach: off, transcript only".to_string(),
     };
-    let research_enabled = agent_config.is_some();
+    // F8 works with a CLI *or* a provider now; only `--provider none` with no
+    // CLI leaves it off, and then the keys are not registered at all.
+    let research_enabled = agent_config.is_some() || provider.is_some();
+    let research_prompt = std::fs::read_to_string(&args.research_prompt)
+        .unwrap_or_else(|_| coach::RESEARCH_PROMPT.to_string());
     let online = provider.is_some();
     let agent = agent_config.map(|config| agent::Agent::new(config, turn_tx.clone()));
     let coach = provider.map(|p| coach::Coach::new(p, prompt, turn_tx.clone()));
@@ -625,7 +659,11 @@ fn main() -> Result<()> {
                 args.min_words,
                 log,
                 roster,
-                ContextServices { agent, references },
+                ContextServices {
+                    agent,
+                    references,
+                    research_prompt,
+                },
             )
         });
     }

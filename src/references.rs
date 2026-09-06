@@ -151,8 +151,6 @@ impl References {
     /// Not "everything indexed" — 24 files × 400 KB does not fit a request —
     /// but the ranker `retrieve` already uses, given room. Cut on whole
     /// passages so a citation is never half a passage.
-    // Task 10 wires research routing to this; delete the allow then.
-    #[allow(dead_code)]
     pub fn retrieve_deep(&self, query: &str) -> String {
         self.excerpts(query, true, 40, 60_000)
     }
