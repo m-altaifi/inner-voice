@@ -39,7 +39,7 @@ them is the same mid-sentence interruption as reaching for the mouse. The
 conversation sits *below* the advice and above the question box. Only
 deliberately-consulted things (references, diagnostics, research, the key list)
 take over the main pane. `KEYS` in `src/hud.rs` is still the entire action
-table: one `RegisterHotKey` per row on Ctrl+Shift+F1..F12, dispatched by
+table: one `RegisterHotKey` per row on Ctrl+Shift+F1..F6, dispatched by
 `State::command`, and the id in each row is both the hotkey id and the id a test
 posts as `WM_HOTKEY`. The conversation pane grows with the transcript up to
 `VISIBLE_TURNS` (8) rows and advice takes the rest. Auto-scroll is `ScrollArea::stick_to_bottom`,
@@ -63,7 +63,7 @@ found. The *whole* window is the drag grip (`hit_test` returns
 `Grab::Move` for anything that is not a resize edge), which is why
 `style.interaction.selectable_labels` is off: text selection would swallow the
 gesture, and it was dead weight anyway since a `WS_EX_NOACTIVATE` window never
-has focus to answer Ctrl+C. Ctrl+Shift+F12 pins, freezing move and resize both.
+has focus to answer Ctrl+C. `/pin` freezes move and resize both.
 - **The panel moves itself; do not go back to `ViewportCommand::StartDrag`.**
   That posts `WM_NCLBUTTONDOWN`/`HTCAPTION` and leaves the rest to Windows'
   modal move loop, which needs the window to be the foreground one and needs
@@ -89,7 +89,7 @@ this preview only, and needs `IV_UI_DUMP` set to a path before launch: no child
 controls exist to read with `GetDlgItem` any more, so the panel mirrors its
 *state* to that file — deliberately not its render, which would be a second copy
 of the layout free to disagree with the screen. Screenshots cover the drawing.
-`Msg::Sys` lines are panel-only: they land in Diagnostics (Ctrl+Shift+F4) and are
+`Msg::Sys` lines are panel-only: they land in Diagnostics (`/diagnostics`) and are
 never written to the JSONL log — `route` records `COACH`, `RESEARCH` and turns
 and drops `Sys`. Of the `Sys` diagnostics only the prefixes `pump`'s filter
 admits reach the notice line (`hearing:`, `speak:`, `coach:`, `research off`,
@@ -245,25 +245,39 @@ Traps here, each already paid for once (see LEDGER):
 - **`--manual` is not Pause, and the two must not be merged.** Pause bumps the
   audio epoch and `route` drops the whole `Msg::Turn` — no log, no history, no
   name binding — because "stop listening" is what it means. `--manual` and
-  Ctrl+Shift+F10 only stop the *unbidden* `coach.ask`: the turn is still
+  Ctrl+Shift+F3 only stop the *unbidden* `coach.ask`: the turn is still
   transcribed, named, logged and pushed to history, so arming advice later
   starts from a full 24-turn window rather than a blank one. This exists
   because the panel is meant to run for a working day, where advice on every
   overheard sentence is a bill and a distraction. `status_text` shows which
   state it is in — a muted coach and a dead one are otherwise the same picture,
   and `a_muted_coach_says_so_rather_than_looking_idle` guards that.
-- **A key or a command, never neither, and the split is not arbitrary.** F10
-  went from Clear references to the advice toggle because the toggle is
-  frequent and reversible while a clear is rare and destructive — a fumbled
-  F-key mid-sentence should reach the recoverable one. Clearing kept its `id`
-  and handler and moved to `/clear`. `COMMANDS` in `src/hud.rs` is that second
-  table, rendered under `KEYS` in the help view, and
-  `every_action_is_reachable_by_exactly_one_key` asserts an action never loses
-  both. A command is handled by whoever owns the state it changes: `/hear` in
-  `route` (it writes `Tune`), `/clear` in the panel (it also empties the
-  panel's import list, which `route` cannot reach).
+- **Six keys, not twelve, and the split is not arbitrary.** Every one of the
+  twelve was defensible alone and the set was not: a panel whose whole claim is
+  *don't make me look away* had a key list you had to look away to read. What
+  keeps a key is what must never cost the call app its keyboard — a command has
+  to be *typed*, and typing calls `borrow_keyboard` — so Pause and Hide keep
+  theirs however rarely they are pressed, and so do Ask, the advice toggle, Back
+  to advice (the only way out of a pane once typing has ended) and Help. The
+  other seven became `/` commands with their `id` and handler untouched; nothing
+  was removed. F7..F12 are now deliberately unregistered, because
+  `RegisterHotKey` is first-come process-wide and six rows we did not need were
+  six combinations taken from every other app on the machine — `ui_smoke.ps1`
+  asserts they are free, the mirror image of the ownership check beside it.
+  `COMMANDS` in `src/hud.rs` is both the second table and the dispatcher —
+  `(name, id, help)`, `FORWARD` for the rows `route` owns — because a command
+  used to be an `if text == ...` arm only the help table knew about, which is
+  two places to forget. `every_action_is_reachable_by_exactly_one_key` asserts
+  every action has exactly one of the two: never neither, never both.
+  A command is handled by whoever owns the state it changes: `/hear` in `route`
+  (it writes `Tune`), the rest in the panel (`/clear` also empties the panel's
+  import list, which `route` cannot reach). **A typed command must end with
+  `return_keyboard`, not `typing = false`** — the two hardcoded arms this
+  replaced left the panel foreground with `prior` unrestored, so typing a
+  command took the call app's keyboard and never handed it back. Harmless while
+  two commands existed; not once most actions reach the user that way.
 - **The app selector is a clickable pane *and* a typed command, and both earn
-  their place.** The Sources pane (Ctrl+Shift+F4, `SOURCES`) lists what
+  their place.** The Sources pane (`/sources`, `SOURCES`) lists what
   `audio::playing` finds on the loopback device and toggles a row with
   `Tune::toggle`. It is a control, and the no-controls rule survives it intact
   for the reason the rule exists: that rule is about *focus*, and a

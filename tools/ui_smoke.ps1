@@ -113,10 +113,21 @@ if ($clicked) {
 
 # The app owns its hotkeys for real: registration is first-come process-wide,
 # so a combination it holds must be refused to everyone else.
-foreach ($vk in 0x70, 0x71, 0x7A) {          # Ctrl+Shift+F1, F2, F11
+foreach ($vk in 0x70, 0x71, 0x75) {          # Ctrl+Shift+F1, F2, F6
     if ([PreviewNative]::RegisterHotKey([IntPtr]::Zero, 900 + $vk, 0x0002 -bor 0x0004, $vk)) {
         [void][PreviewNative]::UnregisterHotKey([IntPtr]::Zero, 900 + $vk)
         throw "Panel does not actually own Ctrl+Shift+F$($vk - 0x6F)"
+    }
+}
+
+# ...and gave the other six back. Registration is first-come process-wide, so
+# a key the panel no longer needs is a key it must no longer be holding from
+# every other app on the machine -- which is half the point of the cut.
+foreach ($vk in 0x76, 0x77, 0x78, 0x79, 0x7A, 0x7B) {   # F7..F12
+    if ([PreviewNative]::RegisterHotKey([IntPtr]::Zero, 900 + $vk, 0x0002 -bor 0x0004, $vk)) {
+        [void][PreviewNative]::UnregisterHotKey([IntPtr]::Zero, 900 + $vk)
+    } else {
+        throw "Panel still holds Ctrl+Shift+F$($vk - 0x6F) after the key cut"
     }
 }
 

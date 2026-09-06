@@ -218,9 +218,10 @@ struct Args {
     voice: Option<String>,
 
     /// Listen and log all day, but never advise unbidden: advice comes only
-    /// from F7 and F8. Ctrl+Shift+F10 arms and mutes it for the session.
-    /// Pause (F5) is the other thing and stays that way — it stops
-    /// transcription outright, so nothing is written down either.
+    /// from a typed question and `/research`. Ctrl+Shift+F3 arms and mutes it
+    /// for the session. Pause (Ctrl+Shift+F4) is the other thing and stays
+    /// that way — it stops transcription outright, so nothing is written down
+    /// either.
     #[arg(long, env = "IV_MANUAL")]
     manual: bool,
 
@@ -355,6 +356,10 @@ fn refresh_corpus(
     }
 }
 
+// Eight arguments because `route` is the one place that sees both capture
+// streams, the coach, the log and the panel — bundling them into a struct
+// would move the same eight names one line down and name nothing new.
+#[allow(clippy::too_many_arguments)]
 fn route(
     rx: Receiver<Msg>,
     tx: Sender<Msg>,

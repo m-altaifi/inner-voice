@@ -89,26 +89,46 @@ while your call app keeps the keyboard. The conversation sits under the advice
 and just above the question box, so the newest speech is next to where you
 answer it; it grows to at least the last eight turns and scrolls for more.
 
+There are six keys. Learning them is the whole interface.
+
 | Key | Action |
 | --- | --- |
-| Ctrl+Shift+F1 | Advice |
-| Ctrl+Shift+F2 | Whole conversation |
-| Ctrl+Shift+F3 | References |
-| Ctrl+Shift+F4 | Choose what it listens to |
-| Ctrl+Shift+F5 | Pause / resume transcription |
-| Ctrl+Shift+F6 | Hide / show the panel |
-| Ctrl+Shift+F7 | Type a question (Enter sends, Esc cancels) |
-| Ctrl+Shift+F8 | Research the last turn |
-| Ctrl+Shift+F9 | Cancel research |
-| Ctrl+Shift+F10 | Advice: armed / on request only |
-| Ctrl+Shift+F11 | This list |
-| Ctrl+Shift+F12 | Pin the panel where it is |
+| Ctrl+Shift+F1 | Back to advice |
+| Ctrl+Shift+F2 | Ask, or type a / command |
+| Ctrl+Shift+F3 | Advice: armed / on request only |
+| Ctrl+Shift+F4 | Pause / resume listening |
+| Ctrl+Shift+F5 | Hide / show the panel |
+| Ctrl+Shift+F6 | This list |
 
-Ctrl+Shift+F11 shows the same list inside the panel. The research keys register
-whenever a coaching provider is online or `--agent-cmd` is set; `--provider none`
-with no CLI leaves them unregistered. Ctrl+Shift+F7 puts the caret in the
-question box; Enter sends, Escape clears it. Escape does not close anything.
-Quit has no hotkey on purpose: Alt+F4 closes the window.
+Everything else is typed into the question box after Ctrl+Shift+F2. You do not
+need any of it on the first day.
+
+| Command | Action |
+| --- | --- |
+| `/sources` | pick which apps are heard, from a list |
+| `/hear` | report which apps are heard as THEM |
+| `/hear <app>[,<app>]` | hear only these; an app not yet running is waited for |
+| `/hear off` | back to the whole speaker mix |
+| `/transcript` | the whole conversation |
+| `/references` | the files dropped on the panel |
+| `/research` | research the last turn |
+| `/cancel` | stop the research running now |
+| `/pin` | pin the panel where it is |
+| `/clear` | clear references |
+| `/diagnostics` | the diagnostics log |
+
+Ctrl+Shift+F6 shows both lists inside the panel. `/research` works whenever a
+coaching provider is online or `--agent-cmd` is set. Ctrl+Shift+F2 puts the
+caret in the question box; Enter sends, Escape clears it. Escape does not close
+anything. Quit has no hotkey on purpose: Alt+F4 closes the window.
+
+It was twelve keys. Each was defensible alone and the set was not: a panel whose
+claim is *don't make me look away* had a key list you had to look away to read.
+Nothing was removed — the seven that left became commands, and Ctrl+Shift+F7 to
+F12 are now free for every other app on the machine.
+
+The panel's own commands take effect the moment you press Enter and hand the
+keyboard straight back to your call app.
 
 Hotkeys are process-wide and first come, first served. If another app already
 owns one of these combinations, registration fails; the panel then names the lost
@@ -123,7 +143,7 @@ and stays up until the next one. It also names the model in use, so the number
 is attributable. `ASK` and `FIX` headings are the only saturated colour; `SAY`
 is soft green and `NOTE` recedes. `THEM` is brighter than `YOU` because `THEM`
 is what you react to. The last turn's advice stays on screen, greyed, until the
-next replaces it. The `Ctrl+Shift+F11` reminder leaves the status line after ten
+next replaces it. The `Ctrl+Shift+F6` reminder leaves the status line after ten
 seconds.
 
 Drag anywhere on the panel to move it — there is no title strip to aim for, and

@@ -26,8 +26,7 @@ use windows::Win32::{
     UI::{
         Input::KeyboardAndMouse::{
             GetAsyncKeyState, MOD_CONTROL, MOD_NOREPEAT, MOD_SHIFT, RegisterHotKey,
-            SetActiveWindow, VK_F1, VK_F2, VK_F3, VK_F4, VK_F5, VK_F6, VK_F7, VK_F8, VK_F9, VK_F10,
-            VK_F11, VK_F12, VK_LBUTTON,
+            SetActiveWindow, VK_F1, VK_F2, VK_F3, VK_F4, VK_F5, VK_F6, VK_LBUTTON,
         },
         Shell::{DragAcceptFiles, DragFinish, DragQueryFileW, HDROP},
         WindowsAndMessaging::{
@@ -68,7 +67,7 @@ const PIN: usize = 114;
 /// room for this many before the advice gets whatever is left.
 const VISIBLE_TURNS: f32 = 8.0;
 
-/// How long the status line carries `Ctrl+Shift+F11 for keys` after launch.
+/// How long the status line carries its `for keys` reminder after launch.
 ///
 /// A permanent hint is permanent noise (LEDGER Decision 7); the empty advice
 /// pane already names the key list, and the list is one key away.
@@ -116,7 +115,7 @@ fn status_text(
         // nothing worth saying, and advice not armed — and they look identical
         // on screen. Only one of them is a fault, so the line says which.
         (Mode::Listening { online: true }, _) if !coaching => {
-            "Listening · advice on request (F7/F8)".to_string()
+            format!("Listening · advice on request ({} asks)", fkey(ASK))
         }
         (Mode::Listening { online: true }, Some(model)) => format!("Listening · {model}"),
         (Mode::Listening { online: true }, None) => "Listening · coaching on".to_string(),
@@ -134,7 +133,7 @@ fn status_text(
         s.push_str(" · pinned");
     }
     if hint {
-        s.push_str("   ·   Ctrl+Shift+F11 for keys");
+        s.push_str(&format!("   ·   Ctrl+Shift+{} for keys", fkey(HELP)));
     }
     s
 }
@@ -149,35 +148,66 @@ fn status_text(
 ///
 /// Quit is deliberately absent. Alt+F4 already closes the window, is muscle
 /// memory, and cannot be hit by fumbling an adjacent F-key mid-sentence.
-const KEYS: [(u32, usize, &str); 12] = [
-    (VK_F1.0 as u32, ADVICE, "Advice"),
-    (VK_F2.0 as u32, TRANSCRIPT, "Whole conversation"),
-    (VK_F3.0 as u32, REFERENCES, "References"),
-    (VK_F4.0 as u32, SOURCES, "Choose what it listens to"),
-    (VK_F5.0 as u32, PAUSE, "Pause / resume transcription"),
-    (VK_F6.0 as u32, MINIMIZE, "Hide / show the panel"),
-    (
-        VK_F7.0 as u32,
-        ASK,
-        "Type a question (Enter sends, Esc cancels)",
-    ),
-    (VK_F8.0 as u32, RESEARCH, "Research the last turn"),
-    (VK_F9.0 as u32, CANCEL, "Cancel research"),
-    (VK_F10.0 as u32, COACH, "Advice: armed / on request only"),
-    (VK_F11.0 as u32, HELP, "This list"),
-    (VK_F12.0 as u32, PIN, "Pin the panel where it is"),
+///
+/// Six, not twelve. Every one of the twelve was defensible on its own and the
+/// set was not: a panel whose whole claim is *don't make me look away* had a
+/// key list you had to look away to read. What survives is what a working day
+/// actually presses, and only what must never steal the keyboard from the app
+/// being listened to -- pausing and hiding especially, which are the two you
+/// reach for when something private happens. The rest became `/` commands: no
+/// action was removed, and `every_action_is_reachable_by_exactly_one_key`
+/// holds the line that none may lose both.
+///
+/// F7..F12 are deliberately left unregistered. `RegisterHotKey` is
+/// first-come process-wide, so six rows we do not need were six combinations
+/// taken from every other app on the machine.
+const KEYS: [(u32, usize, &str); 6] = [
+    (VK_F1.0 as u32, ADVICE, "Back to advice"),
+    (VK_F2.0 as u32, ASK, "Ask, or type a / command"),
+    (VK_F3.0 as u32, COACH, "Advice: armed / on request only"),
+    (VK_F4.0 as u32, PAUSE, "Pause / resume listening"),
+    (VK_F5.0 as u32, MINIMIZE, "Hide / show the panel"),
+    (VK_F6.0 as u32, HELP, "This list"),
 ];
 
-/// Typed into the question box (Ctrl+Shift+F7), for the actions a key would be
-/// the wrong shape for: ones that need a *name*, and ones destructive enough
-/// that a fumbled F-key mid-sentence should not reach them.
-const COMMANDS: [(&str, &str); 5] = [
-    ("/hear", "report which apps are heard as THEM"),
-    ("/hear <app>[,<app>]", "hear only these; an app not yet running is waited for"),
-    ("/hear off", "back to the whole speaker mix"),
-    ("/clear", "clear references"),
-    ("/diagnostics", "the diagnostics log"),
+/// A command the panel runs itself needs no `id`; `FORWARD` marks the ones
+/// `route` owns, which fall through to `Msg::Question` exactly as before.
+const FORWARD: usize = 0;
+
+/// Typed into the question box, for everything a key is the wrong shape for:
+/// actions that need a *name*, actions rare enough that a key is dead weight,
+/// and actions destructive enough that a fumbled F-key mid-sentence should not
+/// reach them.
+///
+/// This table is the dispatcher as well as the help text. A command used to be
+/// an `if text == ...` arm that only the help table knew about, which is two
+/// places to forget; now adding one is a row.
+const COMMANDS: [(&str, usize, &str); 11] = [
+    ("/sources", SOURCES, "pick which apps are heard, from a list"),
+    ("/hear", FORWARD, "report which apps are heard as THEM"),
+    (
+        "/hear <app>[,<app>]",
+        FORWARD,
+        "hear only these; an app not yet running is waited for",
+    ),
+    ("/hear off", FORWARD, "back to the whole speaker mix"),
+    ("/transcript", TRANSCRIPT, "the whole conversation"),
+    ("/references", REFERENCES, "the files dropped on the panel"),
+    ("/research", RESEARCH, "research the last turn"),
+    ("/cancel", CANCEL, "stop the research running now"),
+    ("/pin", PIN, "pin the panel where it is"),
+    ("/clear", CLEAR, "clear references"),
+    ("/diagnostics", DIAGNOSTICS, "the diagnostics log"),
 ];
+
+/// `F2`, for the sentences that name a key. Written once because six of them
+/// used to spell the number out, and moving a row silently made each one lie.
+fn fkey(id: usize) -> String {
+    KEYS.iter()
+        .find(|(_, k, _)| *k == id)
+        .map(|(vk, _, _)| format!("F{}", vk - VK_F1.0 as u32 + 1))
+        .unwrap_or_default()
+}
 
 fn legend() -> Vec<(String, &'static str)> {
     KEYS.iter()
@@ -501,7 +531,10 @@ impl State {
                     self.coaching = on;
                     let text = match on {
                         true => "coach: advice armed — every far-end turn asks",
-                        false => "coach: advice on request only — F7 asks, F8 researches",
+                        false => &format!(
+                            "coach: advice on request only — Ctrl+Shift+{} asks, /research researches",
+                            fkey(ASK)
+                        ),
                     };
                     self.notice = text.into();
                     remember(&mut self.diagnostics, text.to_string());
@@ -544,11 +577,11 @@ impl State {
                 Msg::ToolEnd(id, result) if id == self.research_id => {
                     self.researching = false;
                     // "finished" over a cancelled or failed job contradicts the
-                    // pane the same sentence sends you to, and F8 is one key
-                    // away from it — so the notice follows the outcome.
+                    // pane the same sentence sends you to, so the notice
+                    // follows the outcome.
                     self.notice = match &result {
-                        Ok(_) => "Research finished — Ctrl+Shift+F8 shows it.",
-                        Err(_) => "Research stopped — Ctrl+Shift+F8 shows why.",
+                        Ok(_) => "Research finished — /research shows it.",
+                        Err(_) => "Research stopped — /research shows why.",
                     }
                     .into();
                     self.research =
@@ -609,19 +642,22 @@ impl State {
             // first brings the caret here and only sends once there is text.
             ASK => {
                 let text = self.question.trim().to_string();
-                // Handled here rather than in `route`: a clear also empties the
-                // panel's own import list, which `route` cannot reach. Each
-                // command belongs to whoever owns the state it changes.
-                if text == "/diagnostics" {
+                // Run here rather than in `route` because each command belongs
+                // to whoever owns the state it changes — a clear also empties
+                // the panel's own import list, which `route` cannot reach.
+                // `FORWARD` rows fall through to `Msg::Question` untouched.
+                if let Some(&(_, target, _)) = COMMANDS
+                    .iter()
+                    .find(|(name, target, _)| *name == text && *target != FORWARD)
+                {
                     self.question.clear();
-                    self.typing = false;
-                    self.command(DIAGNOSTICS, ctx);
-                    return;
-                }
-                if text == "/clear" {
-                    self.question.clear();
-                    self.typing = false;
-                    self.command(CLEAR, ctx);
+                    // `return_keyboard`, not `typing = false`. The two arms this
+                    // replaced left the panel foreground with `prior` unrestored,
+                    // so typing a command took the call app's keyboard and never
+                    // handed it back; most actions reach the user through this
+                    // path now, which is what made the bug worth finding.
+                    self.return_keyboard();
+                    self.command(target, ctx);
                     return;
                 }
                 if text.is_empty() {
@@ -834,11 +870,11 @@ impl State {
                     });
                     ui.add_space(10.0);
                     ui.label(
-                        RichText::new("Typed in the question box (Ctrl+Shift+F7):").color(MUTED),
+                        RichText::new("Typed in the question box:").color(MUTED),
                     );
                     ui.add_space(6.0);
                     egui::Grid::new("commands").spacing([18.0, 6.0]).show(ui, |ui| {
-                        for (command, what) in COMMANDS {
+                        for (command, _, what) in COMMANDS {
                             ui.label(RichText::new(command).color(ACCENT).monospace());
                             ui.label(RichText::new(what).color(FG));
                             ui.end_row();
@@ -864,7 +900,10 @@ impl State {
                     ui.label(RichText::new("Ready to help").color(ACCENT).strong());
                     ui.label(RichText::new(mode).color(MUTED));
                     ui.add_space(10.0);
-                    ui.label(RichText::new("Ctrl+Shift+F11 lists every key.").color(MUTED));
+                    ui.label(
+                        RichText::new(format!("Ctrl+Shift+{} lists every key.", fkey(HELP)))
+                            .color(MUTED),
+                    );
                 }
                 _ => {
                     // Never blank: the last turn's advice stays up while the
@@ -1075,7 +1114,10 @@ impl eframe::App for State {
                 ui.add_space(7.0);
                 let field = ui.add(
                     TextEdit::singleline(&mut self.question)
-                        .hint_text("Ctrl+Shift+F7, then ask about the call or your references…")
+                        .hint_text(format!(
+                            "Ctrl+Shift+{}, then ask — or type / for the rest…",
+                            fkey(ASK)
+                        ))
                         .desired_width(f32::INFINITY),
                 );
                 if std::mem::take(&mut self.focus_question) {
@@ -1382,25 +1424,53 @@ mod tests {
         assert_eq!(KEYS.len(), legend().len());
         // Quit has no key on purpose; Alt+F4 closes.
         assert!(!ids.contains(&CLOSE));
-        assert!(ids.contains(&PIN));
-        // Clearing references gave up F10 to the advice toggle: it is rare and
-        // destructive, and the toggle is frequent and reversible, so a fumbled
-        // F-key mid-sentence should reach the reversible one. It must still be
-        // reachable *somehow* — an action with neither a key nor a command is
-        // dead code no user can run.
-        assert!(!ids.contains(&CLEAR), "F10 belongs to the advice toggle now");
-        for (id, gone, command) in [
-            (CLEAR, "F10", "/clear"),
-            (DIAGNOSTICS, "F4", "/diagnostics"),
+
+        // The cut from twelve keys to six moved seven actions to commands. An
+        // action with neither is dead code no user can run, so the whole list
+        // is checked at once rather than one grandfathered case at a time —
+        // which is what the per-id version had turned into.
+        let typed: Vec<usize> = COMMANDS.iter().map(|(_, id, _)| *id).collect();
+        for (id, name) in [
+            (ADVICE, "advice"),
+            (ASK, "ask"),
+            (COACH, "coach"),
+            (PAUSE, "pause"),
+            (MINIMIZE, "minimize"),
+            (HELP, "help"),
+            (TRANSCRIPT, "transcript"),
+            (REFERENCES, "references"),
+            (RESEARCH, "research"),
+            (CANCEL, "cancel"),
+            (PIN, "pin"),
+            (CLEAR, "clear"),
+            (DIAGNOSTICS, "diagnostics"),
+            (SOURCES, "sources"),
         ] {
-            assert!(!ids.contains(&id), "{gone} belongs to another action now");
             assert!(
-                COMMANDS.iter().any(|(c, _)| *c == command),
-                "{command} lost its key and must keep its command"
+                ids.contains(&id) || typed.contains(&id),
+                "{name} has neither a key nor a command"
+            );
+            assert!(
+                !(ids.contains(&id) && typed.contains(&id)),
+                "{name} has both a key and a command; one of them is the lie"
             );
         }
-        assert!(ids.contains(&SOURCES), "the picker needs a key of its own");
-        assert!(ids.contains(&COACH));
+        // What earned a key is what must never cost the call app its keyboard.
+        // A command has to be typed, and typing borrows focus — so pausing and
+        // hiding, the two you reach for when something private happens, cannot
+        // become commands however rarely they are pressed.
+        for id in [PAUSE, MINIMIZE, COACH, ASK, ADVICE, HELP] {
+            assert!(ids.contains(&id), "this action has to keep its key");
+        }
+        // `route` only knows `/hear`; a `FORWARD` row naming anything else
+        // would be typed into silence.
+        for (name, id, _) in COMMANDS {
+            assert!(name.starts_with('/'), "{name} is not a command");
+            assert!(
+                id != FORWARD || name.starts_with("/hear"),
+                "{name} forwards to a router that does not handle it"
+            );
+        }
     }
     #[test]
     fn status_line_counts_the_wait_and_only_hints_early() {
@@ -1431,7 +1501,7 @@ mod tests {
         // The hint is the last thing on the line and only while it is shown.
         assert_eq!(
             status_text(Mode::Preview, Wait::Idle, None, false, false, true, true),
-            "Preview — microphone off · no online requests   ·   Ctrl+Shift+F11 for keys"
+            "Preview — microphone off · no online requests   ·   Ctrl+Shift+F6 for keys"
         );
         // A named model replaces the generic "coaching on" (sub-project 3 passes it).
         assert_eq!(
@@ -1480,7 +1550,7 @@ mod tests {
             )
         };
         assert_eq!(line(true), "Listening · gemini-3.5-flash-lite");
-        assert_eq!(line(false), "Listening · advice on request (F7/F8)");
+        assert_eq!(line(false), "Listening · advice on request (F2 asks)");
         // Still listening, and still says so: this is not Pause, which stops
         // transcription and so writes nothing down at all.
         assert!(line(false).starts_with("Listening"));

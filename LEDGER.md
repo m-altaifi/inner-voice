@@ -7,6 +7,49 @@ Update the **Now** block after every work session. Nothing else here is chronolo
 
 ## Now
 
+**Twelve keys to six (2026-09-06):** "the options feel crowded and too much."
+Correct, and it was the accumulation pattern rather than any one decision: each
+key was argued for on its own merits and the set was never re-read as a whole,
+so a panel whose entire claim is *don't make me look away mid-sentence* ended
+up with a key list you had to look away to read.
+
+Keys kept: Back to advice, Ask, the advice toggle, Pause, Hide, Help — F1..F6.
+The test that keeps this honest is not taste: a command has to be **typed**, and
+typing calls `borrow_keyboard`, so anything that must never cost the call app
+its keyboard cannot become one. That is what saves Pause and Hide, the two you
+reach for when something private happens, however rarely they are pressed.
+
+The other seven became `/` commands with their `id` and handler untouched:
+`/sources` `/transcript` `/references` `/research` `/cancel` `/pin` `/clear`
+`/diagnostics`. Nothing was removed and nothing became unreachable —
+`every_action_is_reachable_by_exactly_one_key` now walks all fourteen actions
+and asserts exactly one of the two, never neither and never both, which
+replaces the case-by-case grandfathering it had grown into.
+
+`COMMANDS` is now `(name, id, help)` and *is* the dispatcher. It was two
+hardcoded `if text == ...` arms plus a help table that only happened to agree
+with them. Six sentences on screen also spelled out key numbers by hand; `fkey`
+derives them, so moving a row can no longer make a sentence lie.
+
+**Found by doing it:** the two commands that already existed set `typing = false`
+without `return_keyboard`, leaving the panel foreground with `prior`
+unrestored — typing a command took the call app's keyboard and never gave it
+back. Invisible while two rare commands existed; not once most actions reach the
+user that way. Fixed at the single path all of them now walk.
+
+**F7..F12 are given back.** `RegisterHotKey` is first-come process-wide, so six
+rows we did not need were six combinations withheld from every other app on this
+machine. `ui_smoke.ps1` asserts they are now free — the mirror image of the
+ownership check beside it, and the only part of the cut a unit test cannot see.
+
+First clippy run on the crate: one warning, `route`'s eight arguments, allowed
+in place with the reason. 85 unit tests, GPU, loopback and `ui_smoke.ps1` green.
+
+**Still not done, and unchanged by any of this:** the system has never met a
+real call. `voiceid.rs:16` (0.70/0.50), `HANG_MS` and whisper's accuracy are all
+still guesses that have not been contradicted. The Gemini and OpenRouter keys
+want rotating.
+
 **The app picker (2026-09-06):** asked for three times, and refused twice on a
 misreading of the panel's own rule. The no-controls rule is about *focus* — a
 control that must be focused to be pressed costs a mouse grab and steals the
