@@ -1,0 +1,1034 @@
+//! A hands-off call panel: every action has a system-wide hotkey, so the
+//! call app keeps the keyboard and the mouse is never needed. See `KEYS`.
+//!
+//! One page, not a view-switcher. Advice, the turn it is answering, and the
+//! question box are all per-turn, so you need them at the same time — pressing
+//! a key to see what was just said is the same mid-sentence interruption as
+//! reaching for the mouse. Only the things you consult *deliberately*
+//! (references, diagnostics, research, the key list) take over the main pane.
+use crate::{Msg, references::References, speak::Speaker};
+use crossbeam_channel::{Receiver, Sender, unbounded};
+use eframe::egui::{
+    self, Color32, FontId, Key, RichText, ScrollArea, TextEdit, TextStyle, ViewportCommand,
+};
+use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+use std::{
+    collections::VecDeque,
+    path::PathBuf,
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
+};
+use windows::Win32::{
+    Foundation::{HWND, POINT, RECT},
+    UI::{
+        Input::KeyboardAndMouse::{
+            GetAsyncKeyState, MOD_CONTROL, MOD_NOREPEAT, MOD_SHIFT, RegisterHotKey,
+            SetActiveWindow, VK_F1, VK_F2, VK_F3, VK_F4, VK_F5, VK_F6, VK_F7, VK_F8, VK_F9, VK_F10,
+            VK_F11, VK_F12, VK_LBUTTON,
+        },
+        Shell::{DragAcceptFiles, DragFinish, DragQueryFileW, HDROP},
+        WindowsAndMessaging::{
+            GWL_EXSTYLE, GetCursorPos, GetForegroundWindow, GetWindowLongPtrW, GetWindowRect,
+            SWP_NOACTIVATE, SWP_NOZORDER, SetForegroundWindow, SetWindowLongPtrW, SetWindowPos,
+            WM_DROPFILES, WM_HOTKEY, WS_EX_NOACTIVATE,
+        },
+    },
+};
+use winit::platform::windows::EventLoopBuilderExtWindows;
+
+const BG: Color32 = Color32::from_rgb(0x17, 0x1b, 0x22);
+const FG: Color32 = Color32::from_rgb(0xe7, 0xed, 0xf3);
+const MUTED: Color32 = Color32::from_rgb(0xb0, 0xbb, 0xc8);
+const ACCENT: Color32 = Color32::from_rgb(0x7d, 0xc4, 0xff);
+const ADVICE: usize = 101;
+const TRANSCRIPT: usize = 102;
+const REFERENCES: usize = 103;
+const DIAGNOSTICS: usize = 104;
+const PAUSE: usize = 105;
+const RESEARCH: usize = 106;
+const CLEAR: usize = 107;
+const ASK: usize = 108;
+const CANCEL: usize = 110;
+const MINIMIZE: usize = 111;
+const CLOSE: usize = 112;
+const HELP: usize = 113;
+const PIN: usize = 114;
+
+/// Turns of conversation kept on screen above the advice, at minimum.
+///
+/// The pane scrolls and holds far more, but the panel is useless if the turn
+/// the advice is answering has already scrolled away, so the layout reserves
+/// room for this many before the advice gets whatever is left.
+const VISIBLE_TURNS: f32 = 8.0;
+
+/// Every action, and the system-wide key that reaches it.
+///
+/// This panel is an always-on-top overlay used while the *call* app owns the
+/// keyboard, so `RegisterHotKey` — which delivers to `hwnd` regardless of who
+/// is focused — is the primary interface, not an accelerator for one. A button
+/// is only reachable after stealing focus from the call, which is the thing
+/// the window exists to avoid.
+///
+/// Quit is deliberately absent. Alt+F4 already closes the window, is muscle
+/// memory, and cannot be hit by fumbling an adjacent F-key mid-sentence.
+const KEYS: [(u32, usize, &str); 12] = [
+    (VK_F1.0 as u32, ADVICE, "Advice"),
+    (VK_F2.0 as u32, TRANSCRIPT, "Whole conversation"),
+    (VK_F3.0 as u32, REFERENCES, "References"),
+    (VK_F4.0 as u32, DIAGNOSTICS, "Diagnostics"),
+    (VK_F5.0 as u32, PAUSE, "Pause / resume transcription"),
+    (VK_F6.0 as u32, MINIMIZE, "Hide / show the panel"),
+    (
+        VK_F7.0 as u32,
+        ASK,
+        "Type a question (Enter sends, Esc cancels)",
+    ),
+    (VK_F8.0 as u32, RESEARCH, "Research the last turn"),
+    (VK_F9.0 as u32, CANCEL, "Cancel research"),
+    (VK_F10.0 as u32, CLEAR, "Clear references"),
+    (VK_F11.0 as u32, HELP, "This list"),
+    (VK_F12.0 as u32, PIN, "Pin the panel where it is"),
+];
+
+fn legend() -> Vec<(String, &'static str)> {
+    KEYS.iter()
+        .map(|(vk, _, what)| (format!("Ctrl+Shift+F{}", vk - VK_F1.0 as u32 + 1), *what))
+        .collect()
+}
+
+pub struct Session {
+    pub preview: bool,
+    pub research_enabled: bool,
+    pub online: bool,
+    pub references: References,
+    pub epoch: Arc<AtomicU64>,
+}
+
+/// What a drag on the window chrome should do.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Grab {
+    Move,
+    Resize(egui::ResizeDirection),
+}
+
+/// A drag the panel is running itself, in physical screen pixels.
+///
+/// `ViewportCommand::StartDrag` cannot be used here. It posts
+/// `WM_NCLBUTTONDOWN`/`HTCAPTION` and leaves the rest to Windows' modal move
+/// loop, which wants the window to be the foreground one and wants mouse
+/// capture — and this window is `WS_EX_NOACTIVATE` exactly so that it never
+/// becomes foreground. The result was a panel that could only be dragged after
+/// being activated from the taskbar, which is the thing the flag exists to
+/// avoid. Following the cursor by hand needs no capture, no activation and no
+/// modal loop, so it works while the call keeps the keyboard.
+struct Dragging {
+    grab: Grab,
+    /// Cursor when the drag started.
+    from: POINT,
+    /// Window rect when the drag started.
+    rect: (i32, i32, i32, i32),
+}
+
+/// Where a drag of `(dx, dy)` puts a window that started at `rect`.
+///
+/// Resizing pushes only the edges the grabbed corner owns, and each edge stops
+/// against `min` rather than crossing its opposite — `SetWindowPos` takes the
+/// size it is given, so nothing else clamps this.
+fn dragged(
+    grab: Grab,
+    rect: (i32, i32, i32, i32),
+    dx: i32,
+    dy: i32,
+    min: (i32, i32),
+) -> (i32, i32, i32, i32) {
+    use egui::ResizeDirection as R;
+    let (mut left, mut top, mut right, mut bottom) = rect;
+    let direction = match grab {
+        Grab::Move => return (left + dx, top + dy, right + dx, bottom + dy),
+        Grab::Resize(direction) => direction,
+    };
+    if matches!(direction, R::West | R::NorthWest | R::SouthWest) {
+        left = (left + dx).min(right - min.0);
+    }
+    if matches!(direction, R::East | R::NorthEast | R::SouthEast) {
+        right = (right + dx).max(left + min.0);
+    }
+    if matches!(direction, R::North | R::NorthWest | R::NorthEast) {
+        top = (top + dy).min(bottom - min.1);
+    }
+    if matches!(direction, R::South | R::SouthWest | R::SouthEast) {
+        bottom = (bottom + dy).max(top + min.1);
+    }
+    (left, top, right, bottom)
+}
+
+/// Map a pointer inside the borderless window to a move or resize gesture.
+///
+/// The window has no frame of its own, so the edges are reconstructed: six
+/// pixels in from any side resizes, and *everything else drags*. A title strip
+/// would be a few pixels of a panel that is otherwise wall-to-wall text, and
+/// this window is positioned around whatever the call is showing — so the grip
+/// is the whole thing. Selectable labels are turned off to make that possible;
+/// see `paint_style`.
+///
+/// Pinning freezes both gestures. It is the counterpart to grabbing anywhere:
+/// once the panel is where you want it, nothing should be able to shove it.
+/// Kept pure because it is the one piece of the chrome worth a test.
+fn hit_test(x: f32, y: f32, width: f32, height: f32, pinned: bool) -> Option<Grab> {
+    use egui::ResizeDirection as R;
+    if pinned {
+        return None;
+    }
+    let (left, right, top, bottom) = (x < 6.0, x >= width - 6.0, y < 6.0, y >= height - 6.0);
+    let edge = match (left, right, top, bottom) {
+        (true, _, true, _) => Some(R::NorthWest),
+        (_, true, true, _) => Some(R::NorthEast),
+        (true, _, _, true) => Some(R::SouthWest),
+        (_, true, _, true) => Some(R::SouthEast),
+        (true, ..) => Some(R::West),
+        (_, true, ..) => Some(R::East),
+        (_, _, true, _) => Some(R::North),
+        (_, _, _, true) => Some(R::South),
+        _ => None,
+    };
+    Some(edge.map_or(Grab::Move, Grab::Resize))
+}
+
+/// Split advice into headed sections the panel can style.
+///
+/// `prompt.md` emits lines tagged `ASK` / `SAY` / `NOTE` / `FIX`; the four
+/// literals are matched exactly, case-sensitively and only when followed by
+/// whitespace, so a sentence beginning "ASKING" is left alone. Change the tag
+/// vocabulary in one place and it silently renders as body text in the other.
+fn display_advice(text: &str) -> Vec<(Option<&'static str>, String)> {
+    text.lines()
+        .map(|line| {
+            let line = line.trim();
+            for (tag, title) in [
+                ("ASK", "ASK NEXT"),
+                ("SAY", "SUGGESTED WORDING"),
+                ("NOTE", "KEEP IN MIND"),
+                ("FIX", "CLARIFY"),
+            ] {
+                if let Some(rest) = line
+                    .strip_prefix(tag)
+                    .filter(|s| s.starts_with(char::is_whitespace))
+                {
+                    return (Some(title), rest.trim().to_string());
+                }
+            }
+            (None, line.to_string())
+        })
+        .filter(|(title, body)| title.is_some() || !body.is_empty())
+        .collect()
+}
+
+fn remember<T>(lines: &mut VecDeque<T>, item: T) {
+    lines.push_back(item);
+    while lines.len() > 200 {
+        lines.pop_front();
+    }
+}
+fn joined(lines: &VecDeque<String>) -> String {
+    lines.iter().cloned().collect::<Vec<_>>().join("\n\n")
+}
+
+struct State {
+    rx: Receiver<Msg>,
+    tx: Sender<Msg>,
+    hotkeys: Receiver<usize>,
+    drops: Receiver<Vec<PathBuf>>,
+    session: Session,
+    speaker: Option<Speaker>,
+    hwnd: HWND,
+    /// Who had the keyboard before `ASK` borrowed it, so it can be handed back.
+    prior: Option<HWND>,
+    /// True only while the question box is meant to receive keystrokes.
+    typing: bool,
+    /// Frozen in place: no drag, no resize.
+    pinned: bool,
+    drag: Option<Dragging>,
+    alpha: f32,
+    notice: String,
+    question: String,
+    focus_question: bool,
+    view: usize,
+    paused: bool,
+    seq: u64,
+    thinking: bool,
+    advice: String,
+    research: String,
+    researching: bool,
+    research_id: u64,
+    transcript: VecDeque<(String, String)>,
+    diagnostics: VecDeque<String>,
+    imports: VecDeque<String>,
+    /// Files dropped while online, waiting on the excerpt-sharing consent.
+    pending: Vec<PathBuf>,
+    /// Where to mirror panel state for `tools/ui_smoke.ps1`, from `IV_UI_DUMP`.
+    ///
+    /// egui draws into one window with no child controls, so a test script has
+    /// nothing to read with `GetDlgItem` the way it could with the Win32 build.
+    /// This mirrors the *state* a hotkey changed — deliberately not the render,
+    /// which would be a second copy of the layout free to disagree with the
+    /// screen; screenshots are what check the drawing.
+    dump: Option<(PathBuf, String)>,
+}
+
+impl State {
+    /// Hold `WS_EX_NOACTIVATE` on the window unless the question box wants it off.
+    ///
+    /// The flag is what keeps a click on the panel from pulling focus off the
+    /// call, and it is equally what stops a keystroke ever reaching the question
+    /// box — so it tracks `typing` rather than being set once.
+    ///
+    /// It has to be re-asserted every frame: winit recomputes the extended style
+    /// whenever the window changes state and has no notion of this flag, so a
+    /// one-shot set at startup is silently dropped the first time anything moves
+    /// (which is how it was lost the first time). Costs a `GetWindowLongPtrW`
+    /// and, almost always, nothing else.
+    fn keep_unfocusable(&self) {
+        unsafe {
+            let style = GetWindowLongPtrW(self.hwnd, GWL_EXSTYLE);
+            let flag = WS_EX_NOACTIVATE.0 as isize;
+            let want = if self.typing {
+                style & !flag
+            } else {
+                style | flag
+            };
+            if want != style {
+                SetWindowLongPtrW(self.hwnd, GWL_EXSTYLE, want);
+            }
+        }
+    }
+    /// Let the panel take the keyboard, remembering who had it.
+    ///
+    /// Typing is the one thing a hotkey cannot do for you, so this is the only
+    /// moment the panel is allowed to become the foreground window.
+    fn borrow_keyboard(&mut self) {
+        self.typing = true;
+        self.keep_unfocusable();
+        unsafe {
+            let now = GetForegroundWindow();
+            if now != self.hwnd {
+                self.prior = Some(now);
+            }
+            let _ = SetForegroundWindow(self.hwnd);
+            let _ = SetActiveWindow(self.hwnd);
+        }
+        self.focus_question = true;
+    }
+    /// Give the keyboard back to whoever had it, and stop activating again.
+    fn return_keyboard(&mut self) {
+        self.typing = false;
+        self.keep_unfocusable();
+        if let Some(prior) = self.prior.take() {
+            unsafe {
+                let _ = SetForegroundWindow(prior);
+            }
+        }
+    }
+    fn pump(&mut self) {
+        for _ in 0..100 {
+            let Ok(message) = self.rx.try_recv() else {
+                break;
+            };
+            match message {
+                Msg::Turn(who, text) => {
+                    remember(&mut self.transcript, (who.label().to_string(), text))
+                }
+                Msg::Sys(text) => {
+                    if text.contains("failed")
+                        || text.contains("stopped")
+                        || text.starts_with("coach:")
+                        || text.starts_with("research off")
+                        || text.starts_with("Preview")
+                    {
+                        self.notice = text.clone();
+                    }
+                    remember(&mut self.diagnostics, text);
+                }
+                Msg::ReferenceStatus(text) => {
+                    self.notice = text.clone();
+                    remember(&mut self.imports, text);
+                }
+                Msg::AdviceStart(id) => {
+                    self.seq = id;
+                    self.thinking = true;
+                }
+                Msg::Advice(id, text) if id == self.seq => {
+                    if self.thinking {
+                        self.advice.clear();
+                        self.thinking = false;
+                    }
+                    self.advice.push_str(&text);
+                }
+                Msg::AdviceEnd(id) if id == self.seq => {
+                    // A cancelled generation ends without ever streaming, so
+                    // there is nothing to read out; still being in `thinking`
+                    // is what distinguishes that from a finished one. Retiring
+                    // `seq` makes a repeated end for the same id a no-op rather
+                    // than a second reading of the last advice.
+                    let finished = !self.thinking;
+                    self.thinking = false;
+                    self.seq = u64::MAX;
+                    if finished
+                        && !self.paused
+                        && let Some(speaker) = &self.speaker
+                    {
+                        speaker.say(&self.advice);
+                    }
+                }
+                Msg::ToolStart(id) => {
+                    self.research_id = id;
+                    self.researching = true;
+                    self.notice = "Research is running. You can keep reading live advice.".into();
+                }
+                Msg::ToolEnd(id, result) if id == self.research_id => {
+                    self.researching = false;
+                    self.research =
+                        result.unwrap_or_else(|e| format!("Research couldn't finish\n\n{e}"));
+                    self.notice = "Research finished — Ctrl+Shift+F8 shows it.".into();
+                }
+                _ => {}
+            }
+        }
+    }
+    fn command(&mut self, id: usize, ctx: &egui::Context) {
+        match id {
+            ADVICE | TRANSCRIPT | REFERENCES | DIAGNOSTICS | HELP => self.view = id,
+            MINIMIZE => {
+                let hidden = ctx.input(|i| i.viewport().minimized.unwrap_or(false));
+                ctx.send_viewport_cmd(ViewportCommand::Minimized(!hidden));
+            }
+            CLOSE => ctx.send_viewport_cmd(ViewportCommand::Close),
+            PIN => self.pinned = !self.pinned,
+            PAUSE => {
+                self.paused = !self.paused;
+                self.session.epoch.fetch_add(1, Ordering::SeqCst);
+                self.seq = u64::MAX;
+                self.thinking = false;
+                let _ = self.tx.send(Msg::Pause(self.paused));
+            }
+            // From another view this only brings the result up; pressing it
+            // while already looking at one starts a fresh job.
+            RESEARCH => {
+                let looking = self.view == RESEARCH;
+                self.view = RESEARCH;
+                if !self.researching && (looking || self.research.is_empty()) {
+                    self.research.clear();
+                    let _ = self.tx.send(Msg::Research);
+                }
+            }
+            CANCEL => {
+                let _ = self.tx.send(Msg::CancelResearch);
+                self.researching = false;
+            }
+            CLEAR => {
+                self.session.references.clear();
+                self.imports.clear();
+                self.notice = "References cleared for this session.".into();
+            }
+            // Typing is the one thing a hotkey cannot do for you, so the key
+            // first brings the caret here and only sends once there is text.
+            ASK => {
+                let text = self.question.trim().to_string();
+                if text.is_empty() {
+                    self.borrow_keyboard();
+                } else {
+                    let _ = self.tx.send(Msg::Question(text));
+                    self.question.clear();
+                    self.view = ADVICE;
+                    self.return_keyboard();
+                }
+            }
+            _ => {}
+        }
+    }
+    fn status_line(&self) -> String {
+        let mut status = if self.session.preview {
+            "Preview — microphone off · no online requests"
+        } else if self.paused {
+            "Paused — audio is not being transcribed"
+        } else if self.thinking {
+            "Listening · preparing advice…"
+        } else if self.session.online {
+            "Listening · coaching on"
+        } else {
+            "Listening · transcription only"
+        }
+        .to_string();
+        if self.researching {
+            status.push_str(" · researching");
+        }
+        // Only the pinned state is worth a word: unpinned is the default, and
+        // the panel visibly moves when you drag it.
+        if self.pinned {
+            status.push_str(" · pinned");
+        }
+        // Nothing else on screen is clickable, so this line always carries the
+        // way back to the key list.
+        status.push_str("   ·   Ctrl+Shift+F11 for keys");
+        status
+    }
+    /// The conversation, newest last. Always on screen: the advice is an answer
+    /// to the last turn, and an answer without its question is a riddle.
+    fn conversation(&mut self, ui: &mut egui::Ui) {
+        ScrollArea::vertical()
+            .id_salt("conversation")
+            .stick_to_bottom(true)
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                if self.transcript.is_empty() {
+                    ui.label(
+                        RichText::new("Your conversation will appear here.")
+                            .color(MUTED)
+                            .italics(),
+                    );
+                }
+                for (who, text) in &self.transcript {
+                    ui.horizontal_top(|ui| {
+                        ui.add_sized(
+                            [72.0, ui.text_style_height(&TextStyle::Body)],
+                            egui::Label::new(RichText::new(who).color(ACCENT).monospace()),
+                        );
+                        ui.label(RichText::new(text).color(MUTED));
+                    });
+                }
+            });
+    }
+    /// The big pane: advice by default, or whatever was deliberately opened.
+    fn main_pane(&mut self, ui: &mut egui::Ui) {
+        ScrollArea::vertical()
+            .id_salt("main")
+            // Advice streams in, so it wants the newest text; egui unsticks by
+            // itself when the reader scrolls up and re-sticks at the end. The
+            // other views are documents — they start at the top and stay.
+            .stick_to_bottom(self.view == ADVICE)
+            .auto_shrink([false, false])
+            .show(ui, |ui| match self.view {
+                TRANSCRIPT => {
+                    for (who, text) in &self.transcript {
+                        ui.label(RichText::new(who).color(ACCENT).monospace());
+                        ui.label(RichText::new(text).color(FG));
+                        ui.add_space(8.0);
+                    }
+                }
+                REFERENCES => {
+                    ui.label(RichText::new(self.session.references.preview()).color(FG));
+                    ui.add_space(12.0);
+                    ui.label(RichText::new("IMPORT ACTIVITY").color(ACCENT).strong());
+                    ui.label(RichText::new(joined(&self.imports)).color(MUTED));
+                }
+                DIAGNOSTICS => {
+                    ui.label(RichText::new(joined(&self.diagnostics)).color(MUTED));
+                }
+                HELP => {
+                    ui.label(
+                        RichText::new("These work while your call app has focus.").color(MUTED),
+                    );
+                    ui.add_space(8.0);
+                    egui::Grid::new("keys").spacing([18.0, 6.0]).show(ui, |ui| {
+                        for (key, what) in legend() {
+                            ui.label(RichText::new(key).color(ACCENT).monospace());
+                            ui.label(RichText::new(what).color(FG));
+                            ui.end_row();
+                        }
+                    });
+                    ui.add_space(8.0);
+                    ui.label(RichText::new("Alt+F4 closes the panel.").color(MUTED));
+                }
+                RESEARCH => {
+                    let text = if self.research.is_empty() {
+                        "Research results will appear here. Live coaching continues in Advice."
+                    } else {
+                        &self.research
+                    };
+                    ui.label(RichText::new(text).color(FG));
+                }
+                _ if self.advice.is_empty() => {
+                    let mode = if self.session.online {
+                        "Advice appears after the other person speaks. Drop reference files anywhere on this window."
+                    } else {
+                        "Online advice needs a configured provider. References still work locally."
+                    };
+                    ui.label(RichText::new("Ready to help").color(ACCENT).strong());
+                    ui.label(RichText::new(mode).color(MUTED));
+                    ui.add_space(10.0);
+                    ui.label(RichText::new("Ctrl+Shift+F11 lists every key.").color(MUTED));
+                }
+                _ => {
+                    for (heading, body) in display_advice(&self.advice) {
+                        if let Some(heading) = heading {
+                            ui.add_space(6.0);
+                            ui.label(RichText::new(heading).color(ACCENT).strong().size(13.0));
+                        }
+                        ui.label(RichText::new(body).color(FG).size(19.0));
+                    }
+                }
+            });
+    }
+    /// Start, continue and finish a self-driven window drag. See `Dragging`.
+    ///
+    /// Must run *after* the panels are drawn: on the frame of a press
+    /// `egui_wants_pointer_input` reduces to "did a widget take this press" (its
+    /// hover clause is guarded by `!any_down()`), and that is only known once
+    /// the widgets have been laid out. Call it earlier and the question box,
+    /// scrollbars and consent buttons all start dragging the window.
+    fn move_window(&mut self, ctx: &egui::Context) {
+        // Either signal saying "up" ends the drag, because each can miss a
+        // release on its own: without mouse capture a release outside the window
+        // never reaches egui, and the async key state can be left stale by
+        // injected input. A drag that outlives its release glues the panel to
+        // the pointer, so the *first* sign of release wins.
+        let held = unsafe { GetAsyncKeyState(VK_LBUTTON.0 as i32) } as u16 & 0x8000 != 0
+            && ctx.input(|i| i.pointer.any_down());
+        if !held {
+            self.drag = None;
+        }
+        if self.drag.is_none()
+            && held
+            && ctx.input(|i| i.pointer.any_pressed())
+            && !ctx.egui_wants_pointer_input()
+            && let Some(pos) = ctx.input(|i| i.pointer.press_origin())
+        {
+            let size = ctx.input(|i| i.viewport_rect()).size();
+            if let Some(grab) = hit_test(pos.x, pos.y, size.x, size.y, self.pinned) {
+                unsafe {
+                    let mut from = POINT::default();
+                    let mut rect = RECT::default();
+                    if GetCursorPos(&mut from).is_ok()
+                        && GetWindowRect(self.hwnd, &mut rect).is_ok()
+                    {
+                        let rect = (rect.left, rect.top, rect.right, rect.bottom);
+                        self.drag = Some(Dragging { grab, from, rect });
+                    }
+                }
+            }
+        }
+        let Some(drag) = &self.drag else {
+            return;
+        };
+        unsafe {
+            let mut now = POINT::default();
+            if GetCursorPos(&mut now).is_err() {
+                return;
+            }
+            // `min_inner_size` is in points; the rect is in pixels.
+            let scale = ctx.pixels_per_point();
+            let min = ((460.0 * scale) as i32, (420.0 * scale) as i32);
+            let (left, top, right, bottom) = dragged(
+                drag.grab,
+                drag.rect,
+                now.x - drag.from.x,
+                now.y - drag.from.y,
+                min,
+            );
+            let _ = SetWindowPos(
+                self.hwnd,
+                None,
+                left,
+                top,
+                right - left,
+                bottom - top,
+                SWP_NOZORDER | SWP_NOACTIVATE,
+            );
+        }
+        ctx.request_repaint();
+    }
+    fn mirror_state(&mut self) {
+        let Some((path, last)) = &self.dump else {
+            return;
+        };
+        let now = serde_json::json!({
+            "view": self.view,
+            "turns": self.transcript.len(),
+            "notice": self.notice,
+            "advice": self.advice,
+            "researching": self.researching,
+            "pinned": self.pinned,
+            "dragging": self.drag.is_some(),
+            "question": self.question,
+            "references": self.session.references.preview(),
+            "imports": self.imports.len(),
+        })
+        .to_string();
+        if *last != now {
+            let _ = std::fs::write(path, &now);
+            self.dump = Some((path.clone(), now));
+        }
+    }
+    /// The excerpt-sharing gate. Dropping files while coaching is online can
+    /// send passages to the provider, which is the user's decision, not ours.
+    fn consent(&mut self, ctx: &egui::Context) {
+        if self.pending.is_empty() {
+            return;
+        }
+        egui::Window::new("Add reference material")
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ctx, |ui| {
+                ui.set_max_width(420.0);
+                ui.label(
+                    "These files will be read locally for this session. Relevant excerpts may be \
+                     sent to your coaching or research provider when answering questions or \
+                     reacting to the call.",
+                );
+                ui.add_space(10.0);
+                ui.horizontal(|ui| {
+                    if ui.button("Add these references").clicked() {
+                        self.session
+                            .references
+                            .import(std::mem::take(&mut self.pending));
+                        self.view = REFERENCES;
+                    }
+                    if ui.button("Cancel").clicked() {
+                        self.pending.clear();
+                    }
+                });
+            });
+    }
+}
+
+impl eframe::App for State {
+    fn clear_color(&self, _: &egui::Visuals) -> [f32; 4] {
+        let [r, g, b, _] = BG.to_normalized_gamma_f32();
+        [r, g, b, self.alpha]
+    }
+    fn ui(&mut self, ui: &mut egui::Ui, _: &mut eframe::Frame) {
+        let ctx = ui.ctx().clone();
+        self.keep_unfocusable();
+        self.pump();
+        while let Ok(id) = self.hotkeys.try_recv() {
+            self.command(id, &ctx);
+        }
+        // The consent gate is the same one as before, drawn rather than a modal
+        // message box, which would block the event loop while it is up.
+        let dropped: Vec<PathBuf> = self.drops.try_iter().flatten().collect();
+        if !dropped.is_empty() {
+            if self.session.online {
+                self.pending = dropped;
+            } else {
+                self.session.references.import(dropped);
+                self.view = REFERENCES;
+            }
+        }
+        // Escape used to quit outright. That is a hostile key to give a window
+        // that floats over a live call, so it only backs out of the question
+        // box and hands the keyboard back; Alt+F4 closes.
+        if ctx.input(|i| i.key_pressed(Key::Escape)) {
+            self.question.clear();
+            self.return_keyboard();
+        }
+
+        egui::Panel::top("chrome")
+            .exact_size(if self.notice.is_empty() { 44.0 } else { 84.0 })
+            .show_separator_line(false)
+            .show(ui, |ui| {
+                ui.add_space(10.0);
+                ui.label(RichText::new(self.status_line()).color(MUTED).size(13.0));
+                ui.add_space(4.0);
+                if !self.notice.is_empty() {
+                    ui.label(RichText::new(&self.notice).color(ACCENT).size(13.0));
+                }
+            });
+        egui::Panel::bottom("ask")
+            .exact_size(46.0)
+            .show_separator_line(false)
+            .show(ui, |ui| {
+                ui.add_space(7.0);
+                let field = ui.add(
+                    TextEdit::singleline(&mut self.question)
+                        .hint_text("Ctrl+Shift+F7, then ask about the call or your references…")
+                        .desired_width(f32::INFINITY),
+                );
+                if std::mem::take(&mut self.focus_question) {
+                    field.request_focus();
+                }
+                if field.lost_focus() && ctx.input(|i| i.key_pressed(Key::Enter)) {
+                    self.command(ASK, &ctx);
+                }
+            });
+        // The conversation sits under the advice, just above the question box:
+        // newest speech is then next to where you answer it, and the advice —
+        // what you are actually reading — holds the top of the panel. It keeps a
+        // floor of VISIBLE_TURNS rows and the advice gets everything left over.
+        // Added after `ask`, so `ask` stays the outermost bottom panel.
+        let row = ui.text_style_height(&TextStyle::Body) + ui.spacing().item_spacing.y;
+        let want = (VISIBLE_TURNS * row + 16.0).max(ui.available_height() * 0.30);
+        // Grow with the conversation up to that: reserving the full height from
+        // the first turn would leave a dead gap between one line of speech and
+        // the question box for the opening minutes of every call.
+        let needed = self.transcript.len().max(1) as f32 * row + 16.0;
+        egui::Panel::bottom("conversation")
+            .exact_size(needed.min(want))
+            .show(ui, |ui| self.conversation(ui));
+        egui::CentralPanel::default().show(ui, |ui| self.main_pane(ui));
+
+        self.consent(&ctx);
+        self.mirror_state();
+
+        self.move_window(&ctx);
+        // Same cadence as the old 80 ms timer: fast enough for streaming advice,
+        // idle enough that an overlay is not busy-drawing over someone's call.
+        // A drag needs every frame it can get, and asks for them itself.
+        ctx.request_repaint_after(std::time::Duration::from_millis(80));
+    }
+    fn on_exit(&mut self, _: Option<&eframe::glow::Context>) {
+        let _ = self.tx.send(Msg::CancelResearch);
+    }
+}
+
+/// Take the paths out of a `WM_DROPFILES` handle and release it.
+fn dropped_paths(drop: HDROP) -> Vec<PathBuf> {
+    unsafe {
+        let count = DragQueryFileW(drop, u32::MAX, None);
+        let paths = (0..count.min(24))
+            .map(|index| {
+                let mut path = vec![0u16; DragQueryFileW(drop, index, None) as usize + 1];
+                let n = DragQueryFileW(drop, index, Some(&mut path));
+                PathBuf::from(String::from_utf16_lossy(&path[..n as usize]))
+            })
+            .collect();
+        DragFinish(drop);
+        paths
+    }
+}
+
+pub fn run(
+    rx: Receiver<Msg>,
+    speaker: Option<Speaker>,
+    alpha: u8,
+    commands: Sender<Msg>,
+    session: Session,
+) -> anyhow::Result<()> {
+    let (hotkey_tx, hotkey_rx) = unbounded();
+    let (drop_tx, drop_rx) = unbounded();
+    let research_enabled = session.research_enabled;
+
+    let options = eframe::NativeOptions {
+        viewport: egui::ViewportBuilder::default()
+            .with_inner_size([620.0, 740.0])
+            .with_min_inner_size([460.0, 420.0])
+            .with_always_on_top()
+            .with_decorations(false)
+            .with_transparent(true)
+            // Files come through `WM_DROPFILES`, not winit's OLE drop target:
+            // `OleInitialize` demands an STA thread and `main` has already put
+            // this one in MTA to enumerate WASAPI devices, so asking winit for
+            // drag-and-drop aborts the app at window creation with
+            // `RPC_E_CHANGED_MODE`. The classic protocol needs no COM at all.
+            .with_drag_and_drop(false)
+            // Never take the foreground on open; the call app keeps it.
+            .with_active(false),
+        // winit owns the message loop, so a hotkey only reaches us by looking
+        // at the raw messages on their way past.
+        event_loop_builder: Some(Box::new(move |builder| {
+            builder.with_msg_hook(move |raw| {
+                // Win32 `MSG` is { HWND, UINT, WPARAM, LPARAM, ... }; every
+                // field up to the two read here is pointer-sized on x64.
+                let fields = raw as *const usize;
+                let (message, wparam) = unsafe { (*fields.add(1) as u32, *fields.add(2)) };
+                match message {
+                    // We registered each hotkey with its action id.
+                    WM_HOTKEY => {
+                        let _ = hotkey_tx.send(wparam);
+                        false // winit is welcome to it as well
+                    }
+                    WM_DROPFILES => {
+                        let _ = drop_tx.send(dropped_paths(HDROP(wparam as _)));
+                        true // consumed, including `DragFinish`
+                    }
+                    _ => false,
+                }
+            });
+        })),
+        ..Default::default()
+    };
+
+    eframe::run_native(
+        "Inner Voice — Call companion",
+        options,
+        Box::new(move |cc| {
+            let hwnd = match cc.window_handle().map(|h| h.as_raw()) {
+                Ok(RawWindowHandle::Win32(h)) => HWND(isize::from(h.hwnd) as *mut _),
+                other => return Err(format!("no Win32 window handle: {other:?}").into()),
+            };
+            paint_style(&cc.egui_ctx);
+            unsafe { DragAcceptFiles(hwnd, true) };
+            let mut state = State {
+                rx,
+                tx: commands,
+                hotkeys: hotkey_rx,
+                drops: drop_rx,
+                session,
+                speaker,
+                hwnd,
+                prior: None,
+                alpha: alpha as f32 / 255.0,
+                notice: String::new(),
+                question: String::new(),
+                focus_question: false,
+                view: ADVICE,
+                paused: false,
+                seq: 0,
+                thinking: false,
+                advice: String::new(),
+                research: String::new(),
+                researching: false,
+                research_id: 0,
+                transcript: VecDeque::new(),
+                diagnostics: VecDeque::new(),
+                imports: VecDeque::new(),
+                pending: Vec::new(),
+                typing: false,
+                pinned: false,
+                drag: None,
+                dump: std::env::var_os("IV_UI_DUMP").map(|p| (p.into(), String::new())),
+            };
+            // A hotkey belongs to whoever registered it first, process-wide, so
+            // a clash is silent and would leave an action with no way to reach
+            // it. Report the losers rather than shipping a dead key.
+            let mut lost = Vec::new();
+            for (vk, id, what) in KEYS {
+                if !research_enabled && (id == RESEARCH || id == CANCEL) {
+                    continue;
+                }
+                let registered = unsafe {
+                    RegisterHotKey(
+                        Some(hwnd),
+                        id as i32,
+                        MOD_CONTROL | MOD_SHIFT | MOD_NOREPEAT,
+                        vk,
+                    )
+                };
+                if registered.is_err() {
+                    lost.push(format!("Ctrl+Shift+F{} ({what})", vk - VK_F1.0 as u32 + 1));
+                }
+            }
+            if !lost.is_empty() {
+                let note = format!("Another app already owns {}", lost.join(", "));
+                state.notice = note.clone();
+                remember(&mut state.diagnostics, note);
+            }
+            Ok(Box::new(state))
+        }),
+    )
+    .map_err(|e| anyhow::anyhow!("could not open the panel: {e}"))
+}
+
+fn paint_style(ctx: &egui::Context) {
+    // The panel is one fixed dark palette in both themes: it floats over
+    // someone else's window, so it should not restyle itself with the OS.
+    ctx.set_theme(egui::ThemePreference::Dark);
+    ctx.all_styles_mut(|style| {
+        style.text_styles = [
+            (TextStyle::Heading, FontId::proportional(20.0)),
+            (TextStyle::Body, FontId::proportional(15.0)),
+            (TextStyle::Monospace, FontId::monospace(13.0)),
+            (TextStyle::Button, FontId::proportional(15.0)),
+            (TextStyle::Small, FontId::proportional(12.0)),
+        ]
+        .into();
+        style.visuals = egui::Visuals::dark();
+        style.visuals.panel_fill = BG;
+        style.visuals.window_fill = BG;
+        style.visuals.override_text_color = Some(FG);
+        style.spacing.item_spacing = egui::vec2(8.0, 6.0);
+        // Dragging anywhere moves the window, so text must not swallow the
+        // gesture by selecting instead. Nothing is lost: the panel is
+        // `WS_EX_NOACTIVATE` and never holds keyboard focus, so Ctrl+C could
+        // never have reached a selection in the first place.
+        style.interaction.selectable_labels = false;
+    });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn the_whole_panel_is_a_grip_until_it_is_pinned() {
+        use egui::ResizeDirection as R;
+        assert_eq!(
+            hit_test(2.0, 2.0, 620.0, 740.0, false),
+            Some(Grab::Resize(R::NorthWest))
+        );
+        assert_eq!(
+            hit_test(619.0, 739.0, 620.0, 740.0, false),
+            Some(Grab::Resize(R::SouthEast))
+        );
+        assert_eq!(
+            hit_test(2.0, 400.0, 620.0, 740.0, false),
+            Some(Grab::Resize(R::West))
+        );
+        // Not just a title strip: the middle of the panel moves it too.
+        assert_eq!(hit_test(100.0, 20.0, 620.0, 740.0, false), Some(Grab::Move));
+        assert_eq!(
+            hit_test(300.0, 400.0, 620.0, 740.0, false),
+            Some(Grab::Move)
+        );
+        // Pinned freezes both gestures, edges included.
+        assert_eq!(hit_test(300.0, 400.0, 620.0, 740.0, true), None);
+        assert_eq!(hit_test(2.0, 2.0, 620.0, 740.0, true), None);
+    }
+    #[test]
+    fn a_drag_moves_the_window_and_a_resize_only_pushes_its_own_edges() {
+        use egui::ResizeDirection as R;
+        let rect = (100, 100, 720, 840); // 620 x 740
+        let min = (460, 420);
+        // Moving keeps the size and shifts both corners.
+        assert_eq!(dragged(Grab::Move, rect, 40, -30, min), (140, 70, 760, 810));
+        // The south-east corner moves only the right and bottom edges.
+        assert_eq!(
+            dragged(Grab::Resize(R::SouthEast), rect, 50, 60, min),
+            (100, 100, 770, 900)
+        );
+        // The north-west corner moves only the left and top edges.
+        assert_eq!(
+            dragged(Grab::Resize(R::NorthWest), rect, 50, 60, min),
+            (150, 160, 720, 840)
+        );
+        // One edge at a time for the sides.
+        assert_eq!(
+            dragged(Grab::Resize(R::West), rect, 50, 60, min),
+            (150, 100, 720, 840)
+        );
+        // An edge stops at the minimum instead of crossing its opposite.
+        assert_eq!(
+            dragged(Grab::Resize(R::West), rect, 5_000, 0, min),
+            (260, 100, 720, 840)
+        );
+        assert_eq!(
+            dragged(Grab::Resize(R::SouthEast), rect, -5_000, -5_000, min),
+            (100, 100, 560, 520)
+        );
+    }
+    #[test]
+    fn advice_labels_are_readable_without_losing_content() {
+        let shown = display_advice(
+            "ASK What is the rollback plan?\nASKING is not a tag\nNOTE Owner unclear",
+        );
+        assert_eq!(
+            shown[0],
+            (Some("ASK NEXT"), "What is the rollback plan?".into())
+        );
+        // Only the exact tag followed by whitespace becomes a heading.
+        assert_eq!(shown[1], (None, "ASKING is not a tag".into()));
+        assert_eq!(shown[2], (Some("KEEP IN MIND"), "Owner unclear".into()));
+    }
+    #[test]
+    fn every_action_is_reachable_by_exactly_one_key() {
+        let mut ids: Vec<usize> = KEYS.iter().map(|(_, id, _)| *id).collect();
+        ids.sort_unstable();
+        let mut unique = ids.clone();
+        unique.dedup();
+        assert_eq!(ids, unique, "two keys share an action");
+        assert_eq!(KEYS.len(), legend().len());
+        // Quit has no key on purpose; Alt+F4 closes.
+        assert!(!ids.contains(&CLOSE));
+        assert!(ids.contains(&PIN));
+    }
+}

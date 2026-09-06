@@ -1,0 +1,212 @@
+# inner-voice
+
+A Windows live-call coach. Whisper transcribes your microphone as `YOU` and
+system playback as `THEM`. Suggestions stream into an always-on-top panel.
+You choose what to say. Optional research starts only when you press a hotkey.
+
+## Setup
+
+Requires Windows x64, an NVIDIA GPU/driver, CUDA, Rust, and Visual Studio C++
+build tools with CMake and Ninja. The panel is egui on OpenGL and shares the GPU
+with transcription; both run together on one card. Run from the project directory:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\build.ps1 build --release
+# First setup only; preserve an existing .env:
+Copy-Item .env.example .env
+New-Item -ItemType Directory -Force models
+curl.exe -fL -o models/ggml-large-v3-turbo-q5_0.bin https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo-q5_0.bin
+.\target\release\inner-voice.exe --list-devices
+.\target\release\inner-voice.exe --provider none
+```
+
+Edit `.env` to select a provider and supply its key before enabling coaching.
+Flags override environment variables and `.env`. Relative paths resolve from
+the working directory. Use `--help` for all options.
+
+`build.ps1` discovers Visual Studio using `vswhere`; `IV_VS_PATH` overrides it.
+It respects `CUDA_PATH`, `CMAKE_CUDA_ARCHITECTURES`, and `CMAKE_CUDA_FLAGS`.
+Architecture defaults to `native`; set an explicit list to target other GPUs.
+The script retains the project's `-allow-unsupported-compiler` workaround.
+Prefer a supported CUDA/MSVC combination and re-run the GPU test after changes.
+
+## Coaching
+
+Providers: `anthropic`, `openai`, `deepseek`, `gemini`, `openrouter`, or `none`.
+OpenAI, Gemini, and OpenRouter require `IV_MODEL`/`--model`. Model availability,
+limits, and billing depend on the provider. The Anthropic wire retains fast-mode
+settings and needs a compatible model/account. See `.env.example` for keys.
+
+Edit `prompt.md` for the persona. Suggestions use `ASK`, `SAY`, `NOTE`, and `FIX`.
+Put call briefs in `knowledge/`: Markdown, text, CSV, XLSX, XLSM, XLS, and ODS are
+supported. Replace sample company and attendee facts with your own. Knowledge
+loads once at startup, sorted, capped at 400 KB with a truncation marker.
+Its glossary also primes Whisper. The latest 24 speech/research turns form the
+coaching context; JSONL retains speech, completed advice, and research results.
+
+## Controls and research
+
+The borderless panel is one page: a status line, the advice, the conversation,
+and a one-line question box, all visible at once. Advice answers the last turn,
+so you need both in front of you; pressing a key to see one of them mid-sentence
+is the same interruption as reaching for the mouse. It has no buttons — every
+action is a system-wide hotkey, so the panel needs neither the mouse nor focus
+while your call app keeps the keyboard. The conversation sits under the advice
+and just above the question box, so the newest speech is next to where you
+answer it; it grows to at least the last eight turns and scrolls for more.
+
+| Key | Action |
+| --- | --- |
+| Ctrl+Shift+F1 | Advice |
+| Ctrl+Shift+F2 | Whole conversation |
+| Ctrl+Shift+F3 | References |
+| Ctrl+Shift+F4 | Diagnostics |
+| Ctrl+Shift+F5 | Pause / resume transcription |
+| Ctrl+Shift+F6 | Hide / show the panel |
+| Ctrl+Shift+F7 | Type a question (Enter sends, Esc cancels) |
+| Ctrl+Shift+F8 | Research the last turn |
+| Ctrl+Shift+F9 | Cancel research |
+| Ctrl+Shift+F10 | Clear references |
+| Ctrl+Shift+F11 | This list |
+| Ctrl+Shift+F12 | Pin the panel where it is |
+
+Ctrl+Shift+F11 shows the same list inside the panel, and the status line always
+carries that reminder. The research keys register only when research is
+configured. Ctrl+Shift+F7 puts the caret in the question box; Enter sends,
+Escape clears it. Escape does not close anything. Quit has no hotkey on purpose:
+Alt+F4 closes the window.
+
+Hotkeys are process-wide and first come, first served. If another app already
+owns one of these combinations, registration fails; the panel then names the lost
+keys in the notice line and in Diagnostics. Free the key in the other app.
+
+Both panes follow new content to the newest line and stop following as soon as
+you scroll up to re-read; scroll back to the end and they resume.
+
+Drag anywhere on the panel to move it — there is no title strip to aim for, and
+the panel is meant to sit wherever the call is not. An edge or corner resizes.
+Neither needs the panel focused first.
+Ctrl+Shift+F12 pins it: while pinned nothing moves or resizes it, and the status
+line says so. Panel text is not selectable, which is what leaves the whole
+surface free to drag; nothing is lost, because the panel never holds keyboard
+focus and so could never have answered Ctrl+C.
+
+The panel never takes the keyboard from your call, not even when you click it —
+Ctrl+Shift+F7 is the one exception, and Enter or Escape hands the keyboard
+straight back. Pause discards buffered audio and invalidates in-flight
+transcription. Diagnostics are separate from the conversation.
+
+Try the interface without a model, microphone, or provider connection:
+
+```powershell
+.\target\release\inner-voice.exe --preview
+```
+
+Drag TXT, Markdown, CSV, XLSX, XLSM, XLS, or ODS files into the window. Imports
+run in the background, with reading/ready/error feedback and duplicate detection.
+Files stay in memory for the current session. Limits: 24 files, 10 MB per file,
+400 KB extracted text per file. Clear references removes indexed content without
+changing original files; it does not retract excerpts already sent or logged.
+
+Relevant passages are selected through local word matching, with filename and
+passage citations. Questions work locally in preview/transcription mode; online
+coaching also retrieves passages for the latest remote turn. Before adding files
+in online mode, the interface explains that selected excerpts may go to the
+provider and asks you to confirm. Unrelated passages are not automatically sent.
+
+PDF, Word, and image/OCR import, persistent libraries, and guided setup are still
+planned; unsupported files receive an explicit error. This is not semantic search.
+
+Ctrl+Shift+F8 opens the research view. From any other view it just brings the
+last result back up; pressing it again while that result is already on screen
+starts a fresh job. To use it, install/authenticate Codex CLI, then configure its
+actual executable:
+
+```powershell
+.\target\release\inner-voice.exe --agent-cmd 'C:\path\to\codex.exe' --agent-root knowledge
+```
+
+The adapter uses `codex exec --json`, read-only sandbox, no automatic approvals,
+ignored user configuration/rules, and ephemeral sessions. It requires a CLI
+supporting those flags (`codex exec --help`). Transcript text goes through stdin,
+never a shell. Hidden processes belong to a Windows Job Object; deadlines
+(90 seconds by default, applied to the Codex child), cancellation, and app exit
+terminate the process tree. Each output stream is truncated at 1 MB rather than
+failing the job. Only one research job runs at a time.
+
+`--agent-root` is a working directory, not a filesystem read boundary. The prompt
+requests research within it; the sandbox enforces write restrictions. Research
+sends context to the CLI's service and may incur charges. A result survives newer
+speech and stays available to later coaching turns, truncated to 2,000 characters
+so it cannot crowd real speech out of the 24-turn window. A failed job is shown
+and logged but never enters that window.
+
+Research has not yet been exercised against a real Codex CLI, so treat its event
+parsing as unverified: if it returns "no answer", the error quotes the first line
+the CLI produced, which is the thing to report.
+
+Research is off by default and incompatible with `--provider none`. Speech never
+triggers it; the fast coach has no tools. This release supports Codex. Historical
+Claude/OpenCode adapters in the ledger remain future alternatives.
+
+## File search
+
+Install Everything and `es.exe`, start the indexer, and ensure your drive is
+indexed. The app does not change indexing settings.
+
+```powershell
+.\target\release\inner-voice.exe --search-files 'coach.rs' --es .\es.exe
+# Include matching filenames in manually triggered research:
+.\target\release\inner-voice.exe --agent-cmd 'C:\path\to\codex.exe' --search-query 'migration'
+```
+
+Literal filename/path search is capped at 20 results and five seconds. It does
+not read file contents or execute paths. The standalone command needs no model,
+key, or audio device. An unavailable indexer produces an error; research records
+it as missing evidence and continues.
+
+## Audio and privacy
+
+Use a headset: acoustic echo can put remote speech on the microphone. Calls
+outside this PC cannot be captured. Select the actual call playback device with
+`--loopback 'Headphones name'`; select a mic with `--mic 'Microphone name'`.
+Keep quiet during the first calibration second. Override with `--mic-gate 0.02`
+or `--sys-gate 0.02` if needed (values strictly between 0 and 1).
+Whisper transcribes English with beam search and a full encoder window.
+
+Optional far-end speaker identification:
+
+```powershell
+curl.exe -fL -o models/campplus_sv_en_voxceleb_16k.onnx https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/3dspeaker_speech_campplus_sv_en_voxceleb_16k.onnx
+```
+
+Names come from `knowledge/attendees.csv` and introductions/direct address.
+Uncertain matches stay `THEM`. Thresholds (0.70/0.50) remain unvalidated on real
+calls; collect `--dump clips` audio before tuning them. `--speak` is off by default:
+it mutes loopback transcription while reading advice and can lose remote speech.
+
+Coaching sends transcript and knowledge to the provider. Audio stays local.
+Logs default to `logs/`; `IV_LOG=` disables them. Audio dumps are opt-in.
+`.env`, logs, models, and `clips/` are gitignored; custom dump directories need
+their own ignore rule. Keep call material private and obtain consent as required.
+
+## Verification
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\build.ps1 test --release
+powershell -NoProfile -ExecutionPolicy Bypass -File .\build.ps1 fmt -- --check
+```
+
+Tests cover VAD, roster/voice matching, Unicode knowledge, typed history, logging,
+SSE errors, child deadlines, research parsing, GPU transcription, and WASAPI.
+The GPU test skips without its model; WASAPI needs audio hardware.
+Provider testing is opt-in and sends a synthetic transcript:
+
+```powershell
+$env:IV_LIVE_TEST = '1'
+powershell -NoProfile -ExecutionPolicy Bypass -File .\build.ps1 test --release live_provider
+Remove-Item Env:\IV_LIVE_TEST
+```
+
+A real call is needed to assess recognition and speaker accuracy. The prerecorded
+GPU check proves runtime operation, not conversational accuracy.

@@ -1,0 +1,14 @@
+target/
+models/*.bin
+build.log
+es.exe
+everything/
+Everything.zip
+logs/
+.env
+models/*.onnx
+clips/
+dist/
+*.out
+*.err
+tools/preview-*.png

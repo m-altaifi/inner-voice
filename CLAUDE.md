@@ -1,0 +1,256 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+## Build and test
+
+Always go through `build.ps1` — never bare `cargo`. It sets the CUDA/MSVC
+environment whisper-rs needs on this machine (Ninja generator, explicit
+`-ccbin`, `-allow-unsupported-compiler`, and a deliberately minimal `PATH`
+because `vcvars64.bat` overruns cmd's 8191-char limit otherwise). Everything
+after the script name is forwarded to cargo.
+
+```powershell
+.\build.ps1 build --release
+.\build.ps1 test
+.\build.ps1 test emits_one_utterance      # single test by name substring
+.\build.ps1 run --release -- --list-devices
+```
+
+- `tests/gpu_transcribes.rs` skips itself unless `models/ggml-large-v3-turbo-q5_0.bin`
+  exists (see README for the download). It is the only evidence the unsupported-compiler
+  override did not corrupt runtime — re-run it after any toolchain change.
+- `tests/wasapi_loopback.rs` needs real audio hardware; 0 captured bytes is a pass.
+- The live provider test in `src/coach.rs` costs money and is opt-in:
+  `$env:IV_LIVE_TEST=1; .\build.ps1 test --release live_provider`.
+- `CMAKE_CUDA_ARCHITECTURES` in `build.ps1` is hardcoded to `86` (RTX 3080 Ti).
+
+## Architecture
+
+UX update: the HUD is an **eframe/egui** overlay (`eframe` with the `glow`
+backend; no Win32 window class or child control is left). It is one page, not a
+view-switcher: status line, advice, conversation and question box are on screen
+together, because all three are per-turn and needing a keypress to see one of
+them is the same mid-sentence interruption as reaching for the mouse. The
+conversation sits *below* the advice and above the question box. Only
+deliberately-consulted things (references, diagnostics, research, the key list)
+take over the main pane. `KEYS` in `src/hud.rs` is still the entire action
+table: one `RegisterHotKey` per row on Ctrl+Shift+F1..F12, dispatched by
+`State::command`, and the id in each row is both the hotkey id and the id a test
+posts as `WM_HOTKEY`. The conversation pane grows with the transcript up to
+`VISIBLE_TURNS` (8) rows and advice takes the rest. Auto-scroll is `ScrollArea::stick_to_bottom`,
+which also re-sticks when a reader scrolls back to the end — the hand-written
+Win32 version could not. The *whole* window is the drag grip (`hit_test` returns
+`Grab::Move` for anything that is not a resize edge), which is why
+`style.interaction.selectable_labels` is off: text selection would swallow the
+gesture, and it was dead weight anyway since a `WS_EX_NOACTIVATE` window never
+has focus to answer Ctrl+C. Ctrl+Shift+F12 pins, freezing move and resize both.
+- **The panel moves itself; do not go back to `ViewportCommand::StartDrag`.**
+  That posts `WM_NCLBUTTONDOWN`/`HTCAPTION` and leaves the rest to Windows'
+  modal move loop, which needs the window to be the foreground one and needs
+  mouse capture — and `WS_EX_NOACTIVATE` exists precisely so this window never
+  becomes foreground. The symptom was a panel that could only be dragged after
+  being activated from the taskbar. `State::move_window` follows the cursor with
+  `GetCursorPos` + `SetWindowPos(SWP_NOACTIVATE)` instead: no capture, no
+  activation, no modal loop. A drag ends on the *first* sign of
+  release from either `GetAsyncKeyState(VK_LBUTTON)` or egui's pointer, because
+  each can miss one alone — without capture a release outside the window never
+  reaches egui, and the async key state can be left stale by injected input —
+  and a drag that outlives its release glues the panel to the pointer. That is
+  not hypothetical: it made `ui_smoke.ps1` fail intermittently, with a later
+  position assertion silently measuring the stuck drag instead of itself. The
+  panel therefore mirrors `dragging`, and the script waits for it to clear
+  before trusting any window position. `dragged()` has the geometry and tests.
+`references.rs` owns session-only imports and local passage retrieval.
+`--preview` opens the real interface with sample conversation and no
+audio/network (its research keys are not registered). `tools/ui_smoke.ps1` checks
+this preview only, and needs `IV_UI_DUMP` set to a path before launch: no child
+controls exist to read with `GetDlgItem` any more, so the panel mirrors its
+*state* to that file — deliberately not its render, which would be a second copy
+of the layout free to disagree with the screen. Screenshots cover the drawing. Pause changes an audio epoch, and `audio.rs` discards queued
+and in-flight work from earlier epochs — but only up to `Msg::Turn`. A `Turn`
+carries no epoch, and `Msg::Pause` travels the same FIFO behind it, so one turn
+captured just before the pause still lands. Do not describe pause as a hard
+barrier past the audio worker.
+
+Current additions (2026-09-05): `history.rs` owns the typed 24-turn context.
+`agent.rs` runs optional hotkey-triggered Codex research; `process.rs` contains
+hidden subprocesses with Job Objects, cancellation, deadlines, and output caps.
+`search.rs` uses bounded Everything UTF-8 exports. Research completions and coach
+messages go through the router for logging. The coach now owns one HTTP worker
+and a single newest pending request, rather than spawning per turn. See README
+for the current controls and configuration; older thread counts below are history.
+
+Threads plus crossbeam channels; one `Msg` enum (`src/main.rs`) is everything
+the panel can render.
+
+```
+mic    (Capture) ─→ audio::run ─┐                    ┌─→ route() ─→ ui_tx ─┐
+                   (read/VAD)   ├─→ utt_tx ─→ worker ─┤  (name + log)       ├─→ hud::run
+speakers (Render) ─→ audio::run ┘   per stream        └─→ coach::ask ───────┘  (main thread)
+                   (read/VAD)      (whisper ∥ voiceid)    (SSE, per turn)
+```
+
+Six threads: two capture, two whisper workers, one router, one HUD (plus one per
+in-flight coach request, one scoped embedding thread per far-end utterance, and
+SAPI's if `--speak`).
+
+- `Msg::Turn` carries a `Who`: `You`, or `Them { voice, name }` where `voice` is
+  an audio cluster and `name` a roster binding. They are separate because they
+  come from different evidence — audio says *which* voice, transcript says what
+  it is *called*.
+- **Naming lives in `route()`, not in the THEM worker**, and must stay there:
+  "Sarah, what do you think?" is normally spoken by YOU, on the other capture
+  thread. `route()` is the only place that sees both streams, in order, single
+  threaded — which is also why the JSONL log is written there.
+
+- **YOU vs THEM is the two sockets, not a model.** Mic = `YOU`, render endpoint
+  opened for capture (loopback) = `THEM`. Exact by construction. Telling apart
+  people *within* `THEM` is a separate mechanism (`src/voiceid.rs`) and is
+  best-effort; YOU/THEM never is.
+- **No resampling or downmix code exists** because WASAPI's `autoconvert` gives
+  16 kHz mono f32 directly. `tests/wasapi_loopback.rs` guards that assumption; if
+  it fails, `src/audio.rs` needs a resampler.
+- **COM interfaces are not `Send`.** `main` resolves devices to *names* (so a bad
+  `--mic` fails before the 570 MB model loads) and each capture thread reopens by
+  name after its own `initialize_mta`.
+- **Capture threads never call whisper.** They read, gate and segment (all
+  microseconds) and hand finished utterances to a per-stream worker over a
+  channel. Inference on the capture thread meant WASAPI went unread for the
+  duration and the VAD's silence clock stopped with it — capture has a realtime
+  deadline, inference does not. Don't put anything slow back on that thread; the
+  `--dump` writes live in the worker for the same reason.
+- One shared `WhisperContext`, one `WhisperState` per worker — `WhisperState` is
+  not `Send`, so each worker builds its own from the shared (`Sync`) context, and
+  both speakers decode in parallel with no lock.
+- Each worker runs one throwaway inference at startup (`warm`), because the first
+  CUDA call costs 100 ms+ and would otherwise land on the call's first turn.
+- `route()` keeps a 24-turn window and only asks the coach on a finished `THEM`
+  turn of `--min-words` or more.
+- **Coach cancellation is a generation counter.** `ask()` bumps `seq`; the SSE
+  reader abandons the stream when `live != seq`, and the HUD drops any
+  `Msg::Advice` tagged with a superseded generation.
+- `hud::run` must own the main thread: `eframe::run_native` runs winit's event
+  loop there. State lives in the `eframe::App` itself now, not a `thread_local`
+  `RefCell` — which also retires the whole re-entrancy hazard the `wndproc`
+  version had, since nothing re-enters a borrow.
+
+### Latency budget (~1.2 s to first word)
+
+`HANG_MS` (500 ms, `src/audio.rs`) + whisper (~100 ms for a 4 s turn) + provider
+TTFT (~600 ms warm). Any change that adds a hop — a router, a subprocess, a
+retrieval step — is measured against this. `HANG_MS` now dominates.
+
+The budget is deliberately not spent down: whisper runs beam search and a full
+`audio_ctx` because accuracy is scarcer here than milliseconds. Don't "optimise"
+either back without real-call evidence.
+
+Traps here, each already paid for once (see LEDGER):
+
+- **ASR accuracy cannot be benchmarked on `jfk.wav` or on TTS.** The model has
+  that clip memorised and completes it from language prior even with the audio
+  truncated; synthetic speech scores identically at every setting. Both were
+  tried, both reported no difference, and neither could have. Use `--dump` to
+  collect real utterances instead.
+- The coach must read the SSE body **to its end**, not `break` on the terminator.
+  ureq only pools a connection once the body is exhausted, so breaking early
+  throws the socket away and re-handshakes TLS on every turn (~290 ms).
+- Whisper's `initial_prompt` window is ~224 tokens. `knowledge::glossary` caps at
+  800 chars for that reason; an overrun drops the front silently.
+- `ort` is on ndarray 0.17 and `knf-rs` on 0.16, so their array types are
+  unrelated to the compiler. Bridge tensors with `(shape, Vec<f32>)`.
+- **`voiceid`'s thresholds are unvalidated** (0.70 / 0.50). Do not "fix" the fact
+  that the far end often stays `THEM` by lowering them on intuition — that trades
+  an unnamed turn for a misattributed one, which `prompt.md` explicitly forbids.
+  Tune from `--dump` audio of a real call, or leave them.
+- **egui, not Win32 — and the two traps that cost the most to find.** (1) winit
+  recomputes the window's extended style whenever anything about the window
+  changes and knows nothing about `WS_EX_NOACTIVATE`, so setting it once at
+  startup is silently dropped. `State::keep_unfocusable` re-asserts it every
+  frame and ties it to `typing`, because the same flag that stops a click
+  stealing the call's keyboard also stops a keystroke reaching the question box.
+  (2) `ViewportBuilder::with_drag_and_drop(true)` calls `OleInitialize`, which
+  demands an STA thread, and `main` has already put this one in MTA to enumerate
+  WASAPI devices — so the app aborts at window creation with `RPC_E_CHANGED_MODE`.
+  Files therefore arrive as `WM_DROPFILES` through the winit message hook, which
+  needs no COM. Neither trap is reachable under `--preview`, and the second only
+  appears on a real run — which is the argument for doing one.
+- **The panel is driven by global hotkeys. Do not add buttons or a view-switcher
+  back.** It is an always-on-top overlay used while the *call* app owns the
+  keyboard, so any control that must be focused to be pressed costs a mouse grab
+  mid-sentence — which is the thing the window exists to avoid. `RegisterHotKey`
+  delivers `WM_HOTKEY` to the window whatever has focus; an accelerator table only
+  works once you have stolen focus, which is why it is not the mechanism. A new
+  action is a row in `KEYS`, not a control. Quit has no key on purpose (Alt+F4),
+  and Escape only clears the question box. Registration is first-come
+  process-wide and fails *silently*, which used to leave an action unreachable
+  with no sign; `run` now collects the losers into the notice line and
+  Diagnostics. `RegisterHotKey` still reaches the app under winit, but only via
+  `with_msg_hook` — winit owns the message loop and would drop `WM_HOTKEY`.
+
+- **No input gesture can be tested with injected input.** Keystrokes
+  (`keybd_event`/`SendInput`) *and* mouse events are discarded when the
+  foreground window outranks the sending process — `SetCursorPos` itself returns
+  false — so a press never arrives and the assertion passes having tested
+  nothing. It fails the same way against the old Win32 build, so a green run
+  proves nothing either way. `ui_smoke.ps1` therefore posts `WM_HOTKEY` for
+  dispatch, proves hotkey *ownership* by trying to `RegisterHotKey` the same
+  combination itself and requiring failure, and prints an explicit SKIPPED line
+  when injection is unavailable rather than passing quietly. The drag gesture
+  has no substitute: `hit_test` is unit-tested, and the gesture needs a human.
+- **Research has never been run against the real Codex CLI.** `agent.rs` extracts
+  the answer via `event["item"]["type"] == "agent_message"`; if Codex actually
+  tags that field `item_type`, every research returns "no answer" and the whole
+  feature is inert. Nothing offline can settle it — one real `codex exec --json`
+  capture can. The no-answer error quotes the first output line so a shape
+  mismatch reads as a mismatch instead of silence. Do not "fix" the schema by
+  guessing; get the capture.
+- **Every `AdviceStart` must get an `AdviceEnd`.** `ask` supersedes by announcing
+  a *newer* generation, so the panel moves on by itself; `cancel` has no
+  successor and must close the generation it retires, or the panel sits on
+  "preparing advice" forever — reachable with one Pause press, because the
+  `AdviceStart` can still be in the channel behind the `Msg::Pause` that caused
+  the cancel. `Coach::cancel` therefore emits the terminal message, and both
+  consumers (`route`, `hud`) ignore a repeat rather than logging or speaking it
+  twice. `coach.rs`'s `cancelling_closes_the_generation_it_retired` guards this.
+
+### Providers
+
+`src/provider.rs` is a preset table, not a trait: two wire formats
+(`Wire::Anthropic`, `Wire::OpenAi`) cover five vendors, since OpenAI, DeepSeek,
+Gemini and OpenRouter all speak `/chat/completions`. Anthropic keeps its own path
+only for `speed:"fast"` + `effort:"low"` + prompt caching. Adding a vendor that
+speaks the OpenAI shape is one row in `preset()`.
+
+Providers whose model ids churn (openai, gemini, openrouter) deliberately carry
+**no default model** — a stale default 404s mid-call; a startup error does not.
+
+### Knowledge corpus
+
+`knowledge/` (`.md .txt .csv .xlsx .xlsm .xls .ods`) is loaded once at startup and
+pinned into the system prompt behind an Anthropic cache breakpoint. No retrieval,
+no chunking, no embeddings — deliberate, and capped at 400 KB. Files are sorted so
+the cached prompt prefix stays stable; do not change that ordering casually.
+
+### The prompt is coupled to the HUD
+
+`prompt.md` emits lines tagged `ASK` / `SAY` / `NOTE` / `FIX`. `display_advice()`
+in `src/hud.rs` matches those four literals exactly (case-sensitive, and only
+when followed by whitespace) and returns `(heading, body)` sections the panel
+styles — an accent heading over large body text, which an `EDIT` control could
+never do and which is why the headings used to be faked as plain text. Change the
+tag vocabulary in one place and it silently renders as body text in the other.
+
+## Conventions
+
+- Every CLI flag has an `IV_*` env fallback via clap `env`, and `dotenvy::dotenv()`
+  runs before `Args::parse`, so the app runs bare with a `.env`. Add both when you
+  add a flag, and document it in `.env.example`.
+- `LEDGER.md` is the durable project state — phases, measured numbers, and locked
+  decisions that are not to be re-litigated. Update its **Now** block after a work
+  session; read the decisions before proposing an architecture change.
+- Comments here explain *why a simpler thing was rejected*, not what the code does.
+  Match that; `ponytail:` marks a deliberate shortcut with its ceiling.
+- Windows-only by design (WASAPI, SAPI, global hotkeys, `WM_DROPFILES`). egui
+  is portable; everything it sits on here is not, so there is no cross-platform
+  path.
