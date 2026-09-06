@@ -115,6 +115,10 @@ struct Args {
     #[arg(long, env = "IV_KNOWLEDGE", default_value = "knowledge")]
     knowledge: String,
 
+    /// Folder of reference files that persist across sessions and reload when edited
+    #[arg(long, env = "IV_REFERENCES", default_value = "references")]
+    references: String,
+
     /// Capture a named input device instead of the default mic
     #[arg(long, env = "IV_MIC")]
     mic: Option<String>,
@@ -440,7 +444,7 @@ fn main() -> Result<()> {
     if args.preview {
         let (tx, rx) = unbounded();
         let (commands, input) = unbounded();
-        let references = references::References::new(tx.clone());
+        let references = references::References::new(tx.clone(), None);
         let _ = tx.send(Msg::AdviceStart(1));
         let _ = tx.send(Msg::Advice(
             1,
@@ -619,7 +623,11 @@ fn main() -> Result<()> {
 
     let (turn_tx, turn_rx) = unbounded();
     let (ui_tx, ui_rx) = unbounded();
-    let references = references::References::new(ui_tx.clone());
+    let references = references::References::new(
+        ui_tx.clone(),
+        Some(std::path::PathBuf::from(&args.references)),
+    );
+    references.import_folder();
     // The voice is deafened out of *endpoint* capture only, so the mute follows
     // --speak and not --hear: a process-loopback stream opts out itself (see
     // `app_feed` in audio.rs), and --hear still falls back to the endpoint mix

@@ -16,14 +16,18 @@ struct Document {
     path: PathBuf,
     chunks: Vec<String>,
     index: Vec<HashSet<String>>,
+    // A document's identity is (path, mtime), not the path alone: the same path
+    // with a newer mtime is a different document and must replace the old one.
+    modified: std::time::SystemTime,
 }
 impl Document {
-    fn new(path: PathBuf, chunks: Vec<String>) -> Self {
+    fn new(path: PathBuf, chunks: Vec<String>, modified: std::time::SystemTime) -> Self {
         let index = chunks.iter().map(|s| terms_for_chunk(s)).collect();
         Self {
             path,
             chunks,
             index,
+            modified,
         }
     }
 }
@@ -31,6 +35,7 @@ impl Document {
 struct Library {
     generation: u64,
     documents: Vec<Document>,
+    folder: Option<PathBuf>,
 }
 
 #[derive(Clone)]
@@ -44,8 +49,16 @@ pub struct References {
 }
 
 impl References {
-    pub fn new(tx: Sender<Msg>) -> Self {
-        let library = Arc::new(RwLock::new(Library::default()));
+    pub fn new(tx: Sender<Msg>, folder: Option<PathBuf>) -> Self {
+        if let Some(folder) = &folder {
+            // Ignored on purpose: `import_folder` reads the folder next and
+            // reports what went wrong there, with the path in the message.
+            let _ = std::fs::create_dir_all(folder);
+        }
+        let library = Arc::new(RwLock::new(Library {
+            folder,
+            ..Default::default()
+        }));
         let (queue, rx) = bounded::<(u64, PathBuf)>(MAX_FILES);
         let (data, output) = (library.clone(), tx.clone());
         std::thread::spawn(move || {
@@ -73,9 +86,21 @@ impl References {
                 } else {
                     match result {
                         Ok(document)
-                            if library.documents.iter().any(|d| d.path == document.path) =>
+                            if library.documents.iter().any(|d| {
+                                d.path == document.path && d.modified == document.modified
+                            }) =>
                         {
                             format!("Already added: {name}")
+                        }
+                        // Same path, newer mtime: the file was edited. Replace it,
+                        // or the panel keeps citing text that is no longer there.
+                        Ok(document)
+                            if library.documents.iter().any(|d| d.path == document.path) =>
+                        {
+                            library.documents.retain(|d| d.path != document.path);
+                            let count = document.chunks.len();
+                            library.documents.push(document);
+                            format!("Updated: {name} — {count} passages")
                         }
                         Ok(document) if library.documents.len() < MAX_FILES => {
                             let count = document.chunks.len();
@@ -100,13 +125,14 @@ impl References {
             .read()
             .unwrap_or_else(|e| e.into_inner())
             .generation;
+        let folder = self.folder().and_then(|f| f.canonicalize().ok());
         for path in paths.into_iter().take(MAX_FILES) {
             let name = path
                 .file_name()
                 .unwrap_or_default()
                 .to_string_lossy()
                 .to_string();
-            if let Err(e) = self.queue.try_send((generation, path)) {
+            if let Err(e) = self.queue.try_send((generation, path.clone())) {
                 // "Drop them again later" is only true while the reader is alive;
                 // a dead reader made that advice a loop the user cannot leave.
                 let _ = self.tx.send(Msg::ReferenceStatus(match e {
@@ -115,46 +141,135 @@ impl References {
                 }));
                 break;
             }
+            // Remembered by path, never copied: a copy is stale the moment the
+            // original is edited, and on-disk is the source of truth.
+            if let Some(folder) = &folder
+                && let Ok(canonical) = path.canonicalize()
+                && !canonical.starts_with(folder)
+            {
+                let line = canonical.to_string_lossy().into_owned();
+                if !self.manifest().contains(&line) {
+                    let _ = std::fs::OpenOptions::new()
+                        .create(true)
+                        .append(true)
+                        .open(folder.join(".dropped"))
+                        .and_then(|mut f| {
+                            use std::io::Write as _;
+                            writeln!(f, "{line}")
+                        });
+                }
+            }
             let _ = self
                 .tx
                 .send(Msg::ReferenceStatus(format!("Reading: {name}")));
         }
+    }
+    /// Everything in the folder, plus every path the manifest remembers.
+    pub fn import_folder(&self) {
+        let Some(folder) = self.folder() else {
+            return;
+        };
+        let mut paths: Vec<PathBuf> = match std::fs::read_dir(&folder) {
+            Ok(entries) => entries
+                .filter_map(|e| e.ok().map(|e| e.path()))
+                .filter(|p| p.is_file() && crate::extract::supported(p))
+                .collect(),
+            Err(e) => {
+                let _ = self.tx.send(Msg::ReferenceStatus(format!(
+                    "Couldn't read {}: {e}",
+                    folder.display()
+                )));
+                return;
+            }
+        };
+        paths.sort();
+        paths.extend(self.manifest().into_iter().map(PathBuf::from));
+        self.import(paths);
+    }
+    /// Imported files whose file on disk has changed since.
+    pub fn stale(&self) -> Vec<PathBuf> {
+        let library = self.library.read().unwrap_or_else(|e| e.into_inner());
+        library
+            .documents
+            .iter()
+            .filter(|d| {
+                d.path
+                    .metadata()
+                    .and_then(|m| m.modified())
+                    .ok()
+                    .is_none_or(|m| m != d.modified)
+            })
+            .map(|d| d.path.clone())
+            .collect()
+    }
+    fn folder(&self) -> Option<PathBuf> {
+        self.library
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .folder
+            .clone()
+    }
+    fn manifest(&self) -> Vec<String> {
+        self.folder()
+            .and_then(|f| std::fs::read_to_string(f.join(".dropped")).ok())
+            .map(|s| {
+                s.lines()
+                    .filter(|l| !l.trim().is_empty())
+                    .map(str::to_string)
+                    .collect()
+            })
+            .unwrap_or_default()
     }
     pub fn clear(&self) {
         let mut library = self.library.write().unwrap_or_else(|e| e.into_inner());
         library.generation += 1;
         library.documents.clear();
         drop(library);
+        // The manifest is the only part of a clear that outlives the session;
+        // leaving it would bring the cleared drops back at the next launch.
+        if let Some(f) = self.folder() {
+            let _ = std::fs::write(f.join(".dropped"), "");
+        }
         let _ = self.tx.send(Msg::ReferenceStatus(
-            "References cleared. Original files were not changed.".into(),
+            "References cleared. Original files were not changed; files in the references folder return next launch."
+                .into(),
         ));
     }
     pub fn preview(&self) -> String {
+        let prefix = self
+            .folder()
+            .map(|f| format!("References folder: {}\r\n\r\n", f.display()))
+            .unwrap_or_default();
         let library = self.library.read().unwrap_or_else(|e| e.into_inner());
         if library.documents.is_empty() {
             return format!(
-                "Drop reference files into this window.\r\n\r\nSupported: {}.\r\n\r\nDocuments stay in memory for this session. Relevant passages are selected by word matching, with filename and passage citations.",
+                "{prefix}Drop reference files into this window.\r\n\r\nSupported: {}.\r\n\r\nDocuments stay in memory for this session. Relevant passages are selected by word matching, with filename and passage citations.",
                 crate::extract::FORMATS
             );
         }
-        library
-            .documents
-            .iter()
-            .map(|d| {
-                format!(
-                    "{}\r\n{} passages • Ready\r\n{}\r\n",
-                    d.path.file_name().unwrap_or_default().to_string_lossy(),
-                    d.chunks.len(),
-                    d.chunks
-                        .first()
-                        .map(|s| s.chars().take(350).collect::<String>())
-                        .unwrap_or_default()
-                )
-            })
-            .collect::<Vec<_>>()
-            .join("\r\n")
+        prefix
+            + &library
+                .documents
+                .iter()
+                .map(|d| {
+                    format!(
+                        "{}\r\n{} passages • Ready\r\n{}\r\n",
+                        d.path.file_name().unwrap_or_default().to_string_lossy(),
+                        d.chunks.len(),
+                        d.chunks
+                            .first()
+                            .map(|s| s.chars().take(350).collect::<String>())
+                            .unwrap_or_default()
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("\r\n")
     }
     pub fn retrieve(&self, query: &str) -> String {
+        // The re-read lands on the import thread, so this retrieval may still
+        // read the old text and the next one will not. Blocking a turn on a
+        // 10 MB PDF to be current instead would cost more than it buys.
+        self.import(self.stale());
         self.excerpts(query, true, 4, usize::MAX)
     }
     /// What research gets: wider than a glance, still bounded.
@@ -163,9 +278,13 @@ impl References {
     /// but the ranker `retrieve` already uses, given room. Cut on whole
     /// passages so a citation is never half a passage.
     pub fn retrieve_deep(&self, query: &str) -> String {
+        // As in `retrieve`: the re-read is queued, not awaited.
+        self.import(self.stale());
         self.excerpts(query, true, 40, 60_000)
     }
     pub fn local_answer(&self, query: &str) -> String {
+        // As in `retrieve`: the re-read is queued, not awaited.
+        self.import(self.stale());
         let excerpts = self.excerpts(query, false, 4, usize::MAX);
         if excerpts.is_empty() {
             "No matching passages found.\r\n\r\nTry a name, product, date, or phrase used in your reference files. This is a local search; no AI service was contacted.".into()
@@ -274,16 +393,96 @@ fn load(path: PathBuf) -> Result<Document> {
     let text = crate::extract::text(&path)?;
     ensure!(text.len() <= MAX_TEXT, "{OVERSIZE}");
     ensure!(!text.trim().is_empty(), "no readable text found");
-    Ok(Document::new(path, chunks(&text)))
+    Ok(Document::new(path, chunks(&text), metadata.modified()?))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn wait_until(refs: &References, f: impl Fn(&str) -> bool) -> String {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(8);
+        loop {
+            let p = refs.preview();
+            if f(&p) || std::time::Instant::now() > deadline {
+                return p;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+    }
+    fn folder(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("iv_refs_{}_{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+    #[test]
+    fn folder_files_and_remembered_drops_return_at_startup() {
+        let dir = folder("startup");
+        std::fs::write(dir.join("brief.txt"), "Rollback owner is Sarah").unwrap();
+        let outside = std::env::temp_dir().join(format!("iv_outside_{}.txt", std::process::id()));
+        std::fs::write(&outside, "Recovery target is 20 minutes").unwrap();
+        let (tx, _) = crossbeam_channel::unbounded();
+        let refs = References::new(tx.clone(), Some(dir.clone()));
+        refs.import_folder();
+        wait_until(&refs, |p| p.contains("brief.txt"));
+        // A drop from outside the folder is remembered by path, never copied.
+        refs.import(vec![outside.clone()]);
+        wait_until(&refs, |p| p.contains("iv_outside"));
+        let manifest = std::fs::read_to_string(dir.join(".dropped")).unwrap();
+        assert!(manifest.contains("iv_outside"), "{manifest}");
+        assert!(
+            !dir.join(outside.file_name().unwrap()).exists(),
+            "copied instead of remembered"
+        );
+        // A fresh session sees both again.
+        let again = References::new(tx.clone(), Some(dir.clone()));
+        again.import_folder();
+        let p = wait_until(&again, |p| {
+            p.contains("brief.txt") && p.contains("iv_outside")
+        });
+        assert!(p.starts_with("References folder: "), "{p}");
+        assert!(again.retrieve("rollback owner").contains("Sarah"));
+        // Clear empties the index and the manifest; folder files come back next launch.
+        again.clear();
+        assert_eq!(
+            std::fs::read_to_string(dir.join(".dropped"))
+                .unwrap()
+                .trim(),
+            ""
+        );
+        assert!(again.retrieve("rollback").is_empty());
+    }
+    #[test]
+    fn an_edited_file_is_reimported_by_mtime_not_skipped_as_a_duplicate() {
+        let dir = folder("edit");
+        let file = dir.join("plan.txt");
+        std::fs::write(&file, "owner is Sarah").unwrap();
+        let (tx, _) = crossbeam_channel::unbounded();
+        let refs = References::new(tx, Some(dir.clone()));
+        refs.import_folder();
+        wait_until(&refs, |p| p.contains("plan.txt"));
+        assert!(refs.retrieve("owner").contains("Sarah"));
+        // NTFS keeps 100 ns mtimes, but a same-tick rewrite is possible: wait.
+        std::thread::sleep(std::time::Duration::from_millis(1_100));
+        std::fs::write(&file, "owner is Marcus").unwrap();
+        let stale = refs.stale();
+        assert_eq!(stale, vec![file.canonicalize().unwrap()]);
+        refs.import(stale);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(8);
+        while !refs.retrieve("owner").contains("Marcus") && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        assert!(refs.retrieve("owner").contains("Marcus"));
+        assert!(
+            !refs.retrieve("owner").contains("Sarah"),
+            "the old text was replaced, not appended"
+        );
+        assert!(refs.stale().is_empty());
+    }
     #[test]
     fn retrieval_selects_evidence_and_cites_source() {
         let (tx, _) = crossbeam_channel::unbounded();
-        let refs = References::new(tx);
+        let refs = References::new(tx, None);
         // The `]` in the name proves the citation header is sanitised: a filename
         // must not be able to close the bracket the model reads as structure.
         refs.library.write().unwrap().documents.push(Document::new(
@@ -292,6 +491,7 @@ mod tests {
                 "Rollback owner is Sarah. Recovery target is 20 minutes.".into(),
                 "Holiday schedule follows.".into(),
             ],
+            std::time::SystemTime::UNIX_EPOCH,
         ));
         let result = refs.retrieve("Who owns rollback?");
         assert!(result.contains("[launch.txt, passage 1]"));
@@ -304,7 +504,7 @@ mod tests {
     #[test]
     fn deep_retrieval_returns_more_passages_but_stays_bounded() {
         let (tx, _) = crossbeam_channel::unbounded();
-        let refs = References::new(tx);
+        let refs = References::new(tx, None);
         // 50 passages that all match, each ~2.5 KB. Sized so the byte cap is
         // what cuts, not the 40-passage window: at 1.4 KB the 40 kept passages
         // come to 56 KB and the length assertion below passes with no cap at
@@ -312,11 +512,11 @@ mod tests {
         let chunks: Vec<String> = (0..50)
             .map(|i| format!("rollback plan variant {i} {}", "x".repeat(2_500)))
             .collect();
-        refs.library
-            .write()
-            .unwrap()
-            .documents
-            .push(Document::new(PathBuf::from("plan.txt"), chunks));
+        refs.library.write().unwrap().documents.push(Document::new(
+            PathBuf::from("plan.txt"),
+            chunks,
+            std::time::SystemTime::UNIX_EPOCH,
+        ));
         let shallow = refs.retrieve("rollback plan");
         let deep = refs.retrieve_deep("rollback plan");
         // The whole citation prefix, not "passage ": the banner above the
