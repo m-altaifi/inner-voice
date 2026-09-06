@@ -133,7 +133,8 @@ struct Args {
     #[arg(long, env = "IV_SYS_GATE", value_parser = parse_gate)]
     sys_gate: Option<f32>,
 
-    /// Read advice aloud (deafens capture while it talks)
+    /// Read advice aloud. With --hear the voice is never captured; without it
+    /// the call is deafened while the voice talks
     #[arg(long, env = "IV_SPEAK")]
     speak: bool,
 
@@ -184,6 +185,15 @@ struct Args {
     /// Everything command-line client executable
     #[arg(long, env = "IV_ES", default_value = "es.exe")]
     es: std::path::PathBuf,
+
+    /// Hear only this app as THEM (any part of its name, see --list-apps).
+    /// Without it, THEM is everything the speakers play.
+    #[arg(long, env = "IV_HEAR")]
+    hear: Option<String>,
+
+    /// List the apps with audio on the loopback device and exit
+    #[arg(long)]
+    list_apps: bool,
 }
 
 fn parse_gate(value: &str) -> std::result::Result<f32, String> {
@@ -450,6 +460,20 @@ fn main() -> Result<()> {
     if args.list_devices {
         return list(&enumerator);
     }
+    if args.list_apps {
+        let dev = pick(&enumerator, Direction::Render, &args.loopback)?;
+        println!("\nApps with audio on {}:", dev.get_friendlyname()?);
+        for s in audio::sessions(&dev)? {
+            println!(
+                "  {:>6}  {:<7}  {}",
+                s.pid,
+                if s.active { "active" } else { "silent" },
+                s.name
+            );
+        }
+        println!("\n--hear takes any part of a name; an active one wins.");
+        return Ok(());
+    }
 
     // `none` runs everything except the coach: capture, VAD, whisper, naming,
     // log and panel all work, no key is needed and nothing leaves the machine.
@@ -561,8 +585,11 @@ fn main() -> Result<()> {
     let (turn_tx, turn_rx) = unbounded();
     let (ui_tx, ui_rx) = unbounded();
     let references = references::References::new(ui_tx.clone());
-    let mute = Arc::new(AtomicBool::new(false));
-    let speaker = args.speak.then(|| speak::Speaker::new(Some(mute.clone())));
+    // The voice is deafened out of the loopback only when the loopback is the
+    // whole endpoint mix. With --hear the app is another process and the voice
+    // is never captured, so nothing is muted and no speech is lost.
+    let mute = (args.speak && args.hear.is_none()).then(|| Arc::new(AtomicBool::new(false)));
+    let speaker = args.speak.then(|| speak::Speaker::new(mute.clone()));
 
     // Empty rather than Option so `IV_LOG=` in .env switches it off without a
     // second flag to keep in sync.
@@ -601,14 +628,15 @@ fn main() -> Result<()> {
         });
     }
 
-    // YOU hears itself; THEM is muted while the AI speaks, so its own voice
-    // never comes back around as the other party.
-    for (who, dir, name, gate, mute) in [
+    // YOU hears itself. THEM is the endpoint mix, or one app's process tree
+    // with --hear; only the endpoint mix is deafened while the voice talks.
+    for (who, dir, name, gate, mute, hear) in [
         (
             Who::You,
             Direction::Capture,
             mic_name.clone(),
             args.mic_gate,
+            None,
             None,
         ),
         (
@@ -619,7 +647,8 @@ fn main() -> Result<()> {
             Direction::Render,
             sys_name.clone(),
             args.sys_gate,
-            Some(mute),
+            mute.clone(),
+            args.hear.clone(),
         ),
     ] {
         let (ctx, tx, tune) = (ctx.clone(), turn_tx.clone(), tune.clone());
@@ -631,7 +660,7 @@ fn main() -> Result<()> {
                 name,
                 gate_override: gate,
                 mute,
-                hear: None,
+                hear,
             };
             if let Err(e) = audio::run(input, ctx, tx.clone(), tune) {
                 let _ = tx.send(Msg::Sys(format!("{label} stopped: {e}")));
@@ -656,7 +685,15 @@ fn main() -> Result<()> {
     let _ = ui_tx.send(Msg::Sys(names_note));
     let _ = ui_tx.send(Msg::Sys(coach_note));
     let _ = ui_tx.send(Msg::Sys(format!("YOU <- {mic_name}")));
-    let _ = ui_tx.send(Msg::Sys(format!("THEM <- {sys_name} (loopback)")));
+    let _ = ui_tx.send(Msg::Sys(match &args.hear {
+        Some(app) => format!("THEM <- {app} (app loopback on {sys_name})"),
+        None => format!("THEM <- {sys_name} (loopback)"),
+    }));
+    if args.speak && args.hear.is_none() {
+        let _ = ui_tx.send(Msg::Sys(
+            "speak: reading advice mutes the call; add --hear <app> so it doesn't".into(),
+        ));
+    }
     hud::run(
         ui_rx,
         speaker,
