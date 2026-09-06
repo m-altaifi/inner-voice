@@ -9,7 +9,7 @@ use std::fmt::Write as _;
 use std::path::Path;
 
 /// What `text` accepts, for error messages and `--setup`.
-pub const FORMATS: &str = "TXT, Markdown, CSV, or an Excel/OpenDocument spreadsheet";
+pub const FORMATS: &str = "TXT, Markdown, CSV, an Excel/OpenDocument spreadsheet, or PDF";
 
 fn extension(path: &Path) -> String {
     path.extension()
@@ -22,7 +22,7 @@ fn extension(path: &Path) -> String {
 pub fn supported(path: &Path) -> bool {
     matches!(
         extension(path).as_str(),
-        "txt" | "md" | "csv" | "xlsx" | "xlsm" | "xls" | "ods"
+        "txt" | "md" | "csv" | "xlsx" | "xlsm" | "xls" | "ods" | "pdf"
     )
 }
 
@@ -32,6 +32,7 @@ pub fn text(path: &Path) -> Result<String> {
         "txt" | "md" => std::fs::read_to_string(path).context("expected UTF-8 text"),
         "csv" => csv_to_text(path),
         "xlsx" | "xlsm" | "xls" | "ods" => sheet_to_text(path),
+        "pdf" => pdf(path),
         _ => bail!("unsupported format; use {FORMATS}"),
     }
 }
@@ -62,6 +63,16 @@ fn csv_to_text(path: &Path) -> Result<String> {
         }
     }
     Ok(out)
+}
+
+/// The text layer only. A scanned PDF has pages and no text: say so, rather
+/// than importing an empty document that then "matches nothing".
+fn pdf(path: &Path) -> Result<String> {
+    let text = pdf_extract::extract_text(path).context("reading PDF")?;
+    if text.trim().chars().count() < 20 {
+        bail!("no text layer; export pages as images for OCR");
+    }
+    Ok(text)
 }
 
 /// Flatten a spreadsheet to `key: value` lines.
@@ -140,5 +151,50 @@ mod tests {
             "the error names every accepted format: {err}"
         );
         assert!(supported(&txt) && supported(&csv) && !supported(&exe));
+    }
+    /// A one-page PDF with a correct xref, built here so the test needs no
+    /// external tool and no committed binary. Helvetica is a standard-14 font,
+    /// so no font program has to be embedded for the text to be recoverable.
+    fn tiny_pdf(text: &str) -> Vec<u8> {
+        let content = format!("BT /F1 24 Tf 20 100 Td ({text}) Tj ET");
+        let objects = [
+            "<< /Type /Catalog /Pages 2 0 R >>".to_string(),
+            "<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_string(),
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 400 144] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>".to_string(),
+            format!("<< /Length {} >>\nstream\n{content}\nendstream", content.len()),
+            "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>".to_string(),
+        ];
+        let mut out = b"%PDF-1.4\n".to_vec();
+        let mut offsets = Vec::new();
+        for (i, body) in objects.iter().enumerate() {
+            offsets.push(out.len());
+            out.extend_from_slice(format!("{} 0 obj\n{body}\nendobj\n", i + 1).as_bytes());
+        }
+        let xref = out.len();
+        out.extend_from_slice(
+            format!("xref\n0 {}\n0000000000 65535 f \n", objects.len() + 1).as_bytes(),
+        );
+        for offset in offsets {
+            out.extend_from_slice(format!("{offset:010} 00000 n \n").as_bytes());
+        }
+        out.extend_from_slice(
+            format!(
+                "trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n",
+                objects.len() + 1
+            )
+            .as_bytes(),
+        );
+        out
+    }
+    #[test]
+    fn pdf_text_layer_is_read_and_a_scan_is_refused() {
+        let pdf = scratch("d.pdf");
+        std::fs::write(&pdf, tiny_pdf("Rollback owner is Sarah")).unwrap();
+        assert!(text(&pdf).unwrap().contains("Rollback owner is Sarah"));
+        let scan = scratch("e.pdf");
+        std::fs::write(&scan, tiny_pdf("")).unwrap();
+        let err = text(&scan).unwrap_err().to_string();
+        assert!(err.contains("no text layer"), "{err}");
+        assert!(supported(&pdf));
     }
 }
