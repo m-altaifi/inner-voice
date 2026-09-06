@@ -307,6 +307,13 @@ measure and no calibration second: it takes the floor gate (0.004) and reports
 speaker-mix path — including the fallback — calibrates as before.
 
 `--speak` reads advice aloud, and is off unless set (`.env.example` ships it on).
+Pick the voice with `--voice mark` (any part of a name, as `--hear` matches an
+app); `--setup` names the one it will use and lists the rest. Unset takes the
+first OneCore voice — deliberately not SAPI's own default, which is one of the
+three ancient "Desktop" voices and is why this used to sound robotic. If the
+OneCore voices still are not good enough, Windows 11 ships offline *natural*
+(neural) voices as a free download: Settings > Accessibility > Narrator > Add
+natural voices. Install one and re-run `--setup` to see whether it appears.
 With `--hear` the voice is another process and is never captured — unless that
 app's stream cannot be opened and `THEM` falls back to the speaker mix, which is
 deafened like any other. Without `--hear` the call is deafened while the voice

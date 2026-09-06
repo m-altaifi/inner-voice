@@ -280,6 +280,15 @@ Traps here, each already paid for once (see LEDGER):
   `--sys-gate` overrides. The endpoint mix, *and the fallback to it*, still
   calibrate. Verified live: `THEM gate 0.0040 (fixed)` and speech transcribed
   with no `--sys-gate`.
+- **SAPI's default voice is the worst one installed.** An `ISpVoice` with no
+  `SetVoice` enumerates the SAPI5 category, which holds only the three
+  *Desktop* voices (David/Zira/Hazel) — the oldest concatenative generation,
+  and the entire reason `--speak` sounded robotic. Six better OneCore voices
+  were installed all along in a category SAPI will not enumerate unless asked
+  by id, which `speak::voices` does via `ISpObjectTokenCategory::SetId`.
+  Setting a token on `SpObjectToken` directly fails with `SPERR_NOT_FOUND`
+  (0x80045041) — it must go through the category. Every failure here falls back
+  to the default voice, never to silence.
 - **The `--speak` mute follows `--speak`, not `--hear`.** The mute `Arc` exists
   whenever `--speak` is on; the process-loopback feed opts out (`mute: None`)
   because the voice is another process and deafening that stream would only lose

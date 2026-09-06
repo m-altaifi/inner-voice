@@ -4,7 +4,7 @@
 //! line *measures* time to first token rather than merely checking the key, so
 //! choosing between providers is a decision made from evidence — the same
 //! number the panel shows as `first word` on a live turn.
-use crate::{audio, coach, extract, provider};
+use crate::{audio, coach, extract, provider, speak};
 use std::fmt::Write as _;
 use std::path::Path;
 use wasapi::{DeviceEnumerator, Direction};
@@ -27,6 +27,7 @@ pub struct Inputs {
     pub knowledge: String,
     pub references: String,
     pub agent_cmd: Option<String>,
+    pub voice: Option<String>,
 }
 
 pub fn run(inputs: &Inputs, enumerator: &DeviceEnumerator) -> Vec<Check> {
@@ -166,6 +167,32 @@ pub fn run(inputs: &Inputs, enumerator: &DeviceEnumerator) -> Vec<Check> {
                 name: "provider",
                 ok: false,
                 detail: format!("{e:#}"),
+            },
+        }
+    });
+
+    // Which voice `--speak` will actually use, and what else is installed.
+    // SAPI's own default is one of the three Desktop voices, which sound like
+    // 1998; this is where a user finds out there are better ones and what to
+    // name. Not a failure when a `--voice` misses — the panel still talks.
+    checks.push({
+        let installed = speak::available();
+        let chosen = speak::pick(&installed, inputs.voice.as_deref());
+        Check {
+            name: "voice",
+            ok: true,
+            detail: match (chosen, installed.is_empty()) {
+                (Some(i), _) => format!(
+                    "{} — --voice takes any part of a name, from: {}",
+                    installed[i],
+                    installed.join(", ")
+                ),
+                (None, false) => format!(
+                    "no voice matches {:?}; --speak would use the default. Installed: {}",
+                    inputs.voice.clone().unwrap_or_default(),
+                    installed.join(", ")
+                ),
+                (None, true) => "no OneCore voices installed; --speak uses the SAPI default. Windows 11: Settings > Accessibility > Narrator > Add natural voices".into(),
             },
         }
     });

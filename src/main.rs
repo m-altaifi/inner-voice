@@ -211,6 +211,12 @@ struct Args {
     #[arg(long, env = "IV_HEAR")]
     hear: Option<String>,
 
+    /// Which voice reads advice aloud: any part of a name, as --hear matches an
+    /// app. --setup lists what is installed. Unset takes the first OneCore
+    /// voice, which still beats the Desktop voice SAPI would choose.
+    #[arg(long, env = "IV_VOICE")]
+    voice: Option<String>,
+
     /// Listen and log all day, but never advise unbidden: advice comes only
     /// from F7 and F8. Ctrl+Shift+F10 arms and mutes it for the session.
     /// Pause (F5) is the other thing and stays that way — it stops
@@ -699,6 +705,7 @@ fn main() -> Result<()> {
                 knowledge: args.knowledge.clone(),
                 references: args.references.clone(),
                 agent_cmd: args.agent_cmd.as_ref().map(|p| p.display().to_string()),
+                voice: args.voice.clone(),
             },
             &enumerator,
         );
@@ -824,7 +831,9 @@ fn main() -> Result<()> {
     // when the app cannot be opened — which without this would capture the
     // advice back as a THEM turn and coach on it.
     let mute = args.speak.then(|| Arc::new(AtomicBool::new(false)));
-    let speaker = mute.as_ref().map(|m| speak::Speaker::new(m.clone()));
+    let speaker = mute
+        .as_ref()
+        .map(|m| speak::Speaker::new(m.clone(), args.voice.clone(), ui_tx.clone()));
 
     // Empty rather than Option so `IV_LOG=` in .env switches it off without a
     // second flag to keep in sync.

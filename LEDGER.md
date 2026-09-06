@@ -7,6 +7,33 @@ Update the **Now** block after every work session. Nothing else here is chronolo
 
 ## Now
 
+**The voice (2026-09-06):** "so robotic" had a one-line cause. `--speak` used
+whatever `ISpVoice` picks with no `SetVoice`, which is the SAPI5 category — and
+that category holds only *Desktop* voices, Microsoft's oldest concatenative set.
+Six OneCore voices (George, Hazel, Susan, David, Mark, Zira) were installed the
+whole time in a category SAPI does not enumerate unless asked for it by id.
+`speak::voices` now asks, via `ISpObjectTokenCategory::SetId` on the
+`Speech_OneCore\Voices` key.
+
+Measured on the way: `SpObjectToken::SetId` straight to a OneCore token fails
+with `SPERR_NOT_FOUND` (0x80045041); going through the category enumerates all
+six and `SetVoice` takes them. Proved in PowerShell before any Rust was written.
+
+`--voice` / `IV_VOICE` picks one by any part of its name, the way `--hear`
+matches an app, and `--setup` gained a `voice` line that names the chosen voice
+and lists the rest — a miss is reported with the list rather than silently
+substituted, so a typo cannot look like a preference that worked. 83 unit tests
+(+2).
+
+Not installed here, and the next real step if OneCore is still not good enough:
+Windows 11's offline *natural* (neural) voices — Settings > Accessibility >
+Narrator > Add natural voices. Whether they surface in the OneCore category is
+unverified; `--setup` will say.
+
+**Frameworks looked at and declined:** `zavora-ai/adk-rust` (638★, v2.2.0, 43
+crates) and `microsoft/VibeVoice`. Neither is a fit — see the note in the
+decisions below.
+
 **Key swap (2026-09-06):** Ctrl+Shift+F10 was Clear references and is now the
 advice toggle. The allocation was backwards for an all-day panel: arming and
 muting advice is frequent and reversible, clearing references is rare and
