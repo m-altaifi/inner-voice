@@ -7,6 +7,7 @@
 mod agent;
 mod audio;
 mod coach;
+mod extract;
 mod history;
 mod hud;
 mod knowledge;

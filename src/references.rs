@@ -1,6 +1,6 @@
 //! Session-local document excerpts. Importing never executes a file or uses a network.
 use crate::Msg;
-use anyhow::{Context, Result, bail, ensure};
+use anyhow::{Context, Result, ensure};
 use crossbeam_channel::{Sender, TrySendError, bounded};
 use std::{
     collections::HashSet,
@@ -124,7 +124,10 @@ impl References {
     pub fn preview(&self) -> String {
         let library = self.library.read().unwrap_or_else(|e| e.into_inner());
         if library.documents.is_empty() {
-            return "Drop reference files into this window.\r\n\r\nSupported: TXT, Markdown, CSV, XLSX, XLSM, XLS, ODS.\r\n\r\nDocuments stay in memory for this session. Relevant passages are selected by word matching, with filename and passage citations.\r\n\r\nPDF, Word documents and images are not supported yet.".into();
+            return format!(
+                "Drop reference files into this window.\r\n\r\nSupported: {}.\r\n\r\nDocuments stay in memory for this session. Relevant passages are selected by word matching, with filename and passage citations.",
+                crate::extract::FORMATS
+            );
         }
         library
             .documents
@@ -260,25 +263,7 @@ fn load(path: PathBuf) -> Result<Document> {
         metadata.len() <= 10_000_000,
         "file exceeds the 10 MB import limit"
     );
-    let extension = path
-        .extension()
-        .unwrap_or_default()
-        .to_string_lossy()
-        .to_lowercase();
-    let text = match extension.as_str() {
-        // Size before decode: reading a capped byte count cut at a byte offset, so an
-        // oversized file whose cut split a codepoint was reported as corrupt and never
-        // reached the size check below.
-        "txt" | "md" => {
-            ensure!(metadata.len() <= MAX_TEXT as u64, "{OVERSIZE}");
-            std::fs::read_to_string(&path).context("expected UTF-8 text")?
-        }
-        "csv" => crate::knowledge::csv_to_text(&path)?,
-        "xlsx" | "xlsm" | "xls" | "ods" => crate::knowledge::sheet_to_text(&path)?,
-        _ => {
-            bail!("unsupported format; use TXT, Markdown, CSV or an Excel/OpenDocument spreadsheet")
-        }
-    };
+    let text = crate::extract::text(&path)?;
     ensure!(text.len() <= MAX_TEXT, "{OVERSIZE}");
     ensure!(!text.trim().is_empty(), "no readable text found");
     Ok(Document::new(path, chunks(&text)))

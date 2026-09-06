@@ -9,7 +9,6 @@
 //! only when a real corpus exceeds it — chunking a 20-page brief is theatre.
 
 use anyhow::{Context, Result};
-use calamine::{Data, Reader, open_workbook_auto};
 use std::fmt::Write as _;
 use std::path::Path;
 
@@ -36,20 +35,11 @@ pub fn load(dir: &Path) -> Result<String> {
     let mut out = String::new();
     for path in &files {
         let name = path.file_name().unwrap_or_default().to_string_lossy();
-        let ext = path
-            .extension()
-            .map(|e| e.to_string_lossy().to_lowercase())
-            .unwrap_or_default();
-
-        let body = match ext.as_str() {
-            "md" | "txt" => std::fs::read_to_string(path)
-                .with_context(|| format!("reading {}", path.display()))?,
-            "xlsx" | "xlsm" | "xls" | "ods" => {
-                sheet_to_text(path).with_context(|| format!("reading {}", path.display()))?
-            }
-            "csv" => csv_to_text(path).with_context(|| format!("reading {}", path.display()))?,
-            _ => continue,
-        };
+        if !crate::extract::supported(path) {
+            continue;
+        }
+        let body =
+            crate::extract::text(path).with_context(|| format!("reading {}", path.display()))?;
         if body.trim().is_empty() {
             continue;
         }
@@ -138,85 +128,6 @@ pub fn glossary(corpus: &str) -> String {
         out
     } else {
         format!("Glossary: {out}.")
-    }
-}
-
-/// Same flattening for CSV. Not an Excel format, so calamine cannot read it —
-/// and a real parser matters here because a facts sheet will contain quoted
-/// values with commas in them.
-pub(crate) fn csv_to_text(path: &Path) -> Result<String> {
-    let mut rdr = csv::ReaderBuilder::new()
-        .has_headers(false)
-        .flexible(true)
-        .from_path(path)?;
-    let mut out = String::new();
-    for rec in rdr.records() {
-        let cells: Vec<String> = rec?
-            .iter()
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty())
-            .collect();
-        match cells.len() {
-            0 => {}
-            1 => {
-                let _ = writeln!(out, "{}", cells[0]);
-            }
-            _ => {
-                let _ = writeln!(out, "{}: {}", cells[0], cells[1..].join(" | "));
-            }
-        }
-    }
-    Ok(out)
-}
-
-/// Flatten a spreadsheet to `key: value` lines.
-///
-/// Two columns is the common shape for a facts sheet. Wider rows keep column 1
-/// as the key and join the rest, so a table with notes still reads sensibly.
-pub(crate) fn sheet_to_text(path: &Path) -> Result<String> {
-    let mut wb = open_workbook_auto(path)?;
-    let mut out = String::new();
-    for name in wb.sheet_names().to_vec() {
-        let range = wb
-            .worksheet_range(&name)
-            .with_context(|| format!("reading worksheet {name:?}"))?;
-        let mut rows = String::new();
-        for row in range.rows() {
-            let cells: Vec<String> = row
-                .iter()
-                .map(cell_text)
-                .filter(|s| !s.is_empty())
-                .collect();
-            match cells.len() {
-                0 => {}
-                1 => {
-                    let _ = writeln!(rows, "{}", cells[0]);
-                }
-                _ => {
-                    let _ = writeln!(rows, "{}: {}", cells[0], cells[1..].join(" | "));
-                }
-            }
-        }
-        if !rows.trim().is_empty() {
-            let _ = write!(out, "### {name}\n{rows}\n");
-        }
-    }
-    Ok(out)
-}
-
-fn cell_text(c: &Data) -> String {
-    match c {
-        Data::Empty => String::new(),
-        Data::String(s) => s.trim().to_string(),
-        Data::Float(f) => {
-            // Whole numbers as integers: "12" reads better than "12.0" as a fact.
-            if f.fract() == 0.0 && f.abs() < 1e15 {
-                format!("{}", *f as i64)
-            } else {
-                f.to_string()
-            }
-        }
-        other => other.to_string().trim().to_string(),
     }
 }
 
