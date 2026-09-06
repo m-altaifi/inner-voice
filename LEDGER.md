@@ -7,6 +7,29 @@ Update the **Now** block after every work session. Nothing else here is chronolo
 
 ## Now
 
+**Not call-shaped (2026-09-06):** the product is an always-on assistant for a
+working day, enabled manually — not a call coach. Nothing detected a call
+before, so the code needed one change rather than a rewrite: a far-end turn no
+longer asks the coach on its own when `--manual` / `IV_MANUAL` is set, and
+`/coach on|off` flips it for the session. The framing in `--help` and the README
+changed with it.
+
+Why it had to exist: eight hours of automatic per-turn advice is a bill and a
+distraction — a meeting you are half in, a video, a colleague at the next desk.
+Pause could not serve this: it bumps the audio epoch and drops the whole
+`Msg::Turn`, so an hour paused is an hour with no transcript. `--manual` keeps
+the record and stops only the unbidden request, which is what makes arming
+advice mid-afternoon useful — the 24-turn window is already full.
+
+`status_text` gained the state, because a muted coach and a dead one are the
+same picture: `Listening · advice on request (F7/F8)`. 81 unit tests (+1).
+
+Still open for the all-day shape, none of it urgent: `audio.rs:304`'s
+whisper-rs `CString` leak (~800 B per utterance) says "revisit if a session ever
+runs for days" — that trigger is now met, though a 10,000-turn day is still only
+8 MB; and `--dump` left on all day writes a `.wav` per utterance with nothing
+pruning it.
+
 **Launching (2026-09-06):** "a bit hard to use" turned out to be the launch, not
 the panel. Root cause: nine defaults are relative, so the app only ever worked
 when started *from* the project directory — which is why running it meant typing

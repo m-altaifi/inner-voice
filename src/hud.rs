@@ -97,6 +97,7 @@ enum Wait {
 ///
 /// Order: mode · model · wait · researching · pinned · hint. A named model
 /// replaces "coaching on" rather than joining it; the hint is always last.
+#[allow(clippy::too_many_arguments)]
 fn status_text(
     mode: Mode,
     wait: Wait,
@@ -104,10 +105,17 @@ fn status_text(
     researching: bool,
     pinned: bool,
     hint: bool,
+    coaching: bool,
 ) -> String {
     let mut s = match (mode, model) {
         (Mode::Preview, _) => "Preview — microphone off · no online requests".to_string(),
         (Mode::Paused, _) => "Paused — audio is not being transcribed".to_string(),
+        // Silence has two causes once the panel can be left running all day —
+        // nothing worth saying, and advice not armed — and they look identical
+        // on screen. Only one of them is a fault, so the line says which.
+        (Mode::Listening { online: true }, _) if !coaching => {
+            "Listening · advice on request (F7/F8)".to_string()
+        }
         (Mode::Listening { online: true }, Some(model)) => format!("Listening · {model}"),
         (Mode::Listening { online: true }, None) => "Listening · coaching on".to_string(),
         (Mode::Listening { online: false }, _) => "Listening · transcription only".to_string(),
@@ -360,6 +368,9 @@ struct State {
     focus_question: bool,
     view: usize,
     paused: bool,
+    /// Whether a far-end turn still asks the coach on its own. Owned by
+    /// `route`, mirrored here for the status line only.
+    coaching: bool,
     seq: u64,
     thinking: bool,
     advice: String,
@@ -460,6 +471,15 @@ impl State {
                 Msg::ReferenceStatus(text) => {
                     self.notice = text.clone();
                     remember(&mut self.imports, text);
+                }
+                Msg::Coaching(on) => {
+                    self.coaching = on;
+                    let text = match on {
+                        true => "coach: advice armed — every far-end turn asks",
+                        false => "coach: advice on request only — F7 asks, F8 researches",
+                    };
+                    self.notice = text.into();
+                    remember(&mut self.diagnostics, text.to_string());
                 }
                 Msg::AdviceStart(id) => {
                     self.seq = id;
@@ -595,6 +615,7 @@ impl State {
             self.researching,
             self.pinned,
             self.launched.elapsed() < Duration::from_secs(HINT_SECS),
+            self.coaching,
         )
     }
     /// The conversation, newest last. Always on screen: the advice is an answer
@@ -1032,6 +1053,10 @@ pub fn run(
                 focus_question: false,
                 view: ADVICE,
                 paused: false,
+                // `route` sends the real value before the first turn; assuming
+                // armed here only means the status line is never briefly wrong
+                // in the direction that would make a muted coach look broken.
+                coaching: true,
                 seq: 0,
                 thinking: false,
                 advice: String::new(),
@@ -1212,7 +1237,8 @@ mod tests {
                 None,
                 false,
                 false,
-                false
+                false,
+                true
             ),
             "Listening · coaching on · thinking 1.4s"
         );
@@ -1223,13 +1249,14 @@ mod tests {
                 None,
                 false,
                 true,
-                false
+                false,
+                true
             ),
             "Listening · coaching on · first word 1.2s · pinned"
         );
         // The hint is the last thing on the line and only while it is shown.
         assert_eq!(
-            status_text(Mode::Preview, Wait::Idle, None, false, false, true),
+            status_text(Mode::Preview, Wait::Idle, None, false, false, true, true),
             "Preview — microphone off · no online requests   ·   Ctrl+Shift+F11 for keys"
         );
         // A named model replaces the generic "coaching on" (sub-project 3 passes it).
@@ -1240,7 +1267,8 @@ mod tests {
                 Some("gemini-3.5-flash-lite"),
                 true,
                 false,
-                false
+                false,
+                true
             ),
             "Listening · gemini-3.5-flash-lite · researching"
         );
@@ -1251,13 +1279,36 @@ mod tests {
                 None,
                 false,
                 false,
-                false
+                false,
+                true
             ),
             "Listening · transcription only"
         );
         assert_eq!(
-            status_text(Mode::Paused, Wait::Thinking(9.0), None, false, false, false),
+            status_text(Mode::Paused, Wait::Thinking(9.0), None, false, false, false, true),
             "Paused — audio is not being transcribed · thinking 9.0s"
         );
+    }
+
+    /// Left running through a working day, "no advice on screen" has two causes
+    /// and only one of them is a fault. The line has to separate them.
+    #[test]
+    fn a_muted_coach_says_so_rather_than_looking_idle() {
+        let line = |coaching| {
+            status_text(
+                Mode::Listening { online: true },
+                Wait::Idle,
+                Some("gemini-3.5-flash-lite"),
+                false,
+                false,
+                false,
+                coaching,
+            )
+        };
+        assert_eq!(line(true), "Listening · gemini-3.5-flash-lite");
+        assert_eq!(line(false), "Listening · advice on request (F7/F8)");
+        // Still listening, and still says so: this is not Pause, which stops
+        // transcription and so writes nothing down at all.
+        assert!(line(false).starts_with("Listening"));
     }
 }

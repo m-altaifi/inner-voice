@@ -1,8 +1,14 @@
 # inner-voice
 
-A Windows live-call coach. Whisper transcribes your microphone as `YOU` and
-system playback as `THEM`. Suggestions stream into an always-on-top panel.
-You choose what to say. Optional research starts only when you press a hotkey.
+A Windows always-on realtime assistant. Whisper transcribes your microphone as
+`YOU` and system playback as `THEM`. Suggestions stream into an always-on-top
+panel. You choose what to say. Optional research starts only when you press a
+hotkey.
+
+It is not call-shaped: nothing detects a call, and nothing ends with one. You
+start it when your working day starts and leave it running — pointing it at
+whichever apps matter (`--hear`, changeable mid-run) and arming advice only when
+you want it (`--manual`, `/coach on`).
 
 ## Setup
 
@@ -259,8 +265,26 @@ to appear in one. `--hear` looks for apps on the `--loopback` device —
 a different device, name that device with `--loopback`. Without `--hear`, `THEM`
 is everything the speakers play.
 
-Change it mid-run without restarting: press Ctrl+Shift+F7 for the question box
-and type a `/hear` command.
+### Running it all day
+
+Left running through a working day, advice on every overheard sentence is both
+expensive and wrong — a meeting you are only half in, a video, someone at the
+next desk. `--manual` (or `IV_MANUAL=true`) starts it listening and *not*
+advising: turns are still transcribed, named, logged and kept in the 24-turn
+history, so the moment you arm it the coach already knows what has been said.
+Advice comes from F7 (ask a question) and F8 (research) until then.
+
+Arm and mute it from the question box with `/coach on` and `/coach off`. The
+status line always says which state it is in — `Listening · advice on request
+(F7/F8)` versus `Listening · <model>` — because otherwise a quiet coach and a
+broken one look identical.
+
+This is not Pause. **F5 stops transcription altogether** and writes nothing
+down; `/coach off` keeps the record and only stops the unbidden advice.
+
+### Changing what it hears, mid-run
+
+Press Ctrl+Shift+F7 for the question box and type a `/hear` command.
 
 | Typed | Effect |
 | --- | --- |

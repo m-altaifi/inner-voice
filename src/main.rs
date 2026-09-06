@@ -41,6 +41,9 @@ pub enum Msg {
     CancelResearch,
     Question(String),
     Pause(bool),
+    /// Whether a far-end turn still asks the coach on its own. Travels the other
+    /// way to `Pause` — `route` owns the setting, the panel only shows it.
+    Coaching(bool),
     ReferenceStatus(String),
     ToolStart(u64),
     ToolEnd(u64, std::result::Result<String, String>),
@@ -85,7 +88,9 @@ impl Who {
 }
 
 #[derive(Parser)]
-#[command(about = "Realtime call coach. Mic = YOU, system audio = THEM.")]
+#[command(
+    about = "Always-on realtime assistant. Mic = YOU, system audio = THEM. --manual to listen without advising."
+)]
 struct Args {
     /// Path to a whisper.cpp GGML model
     #[arg(
@@ -205,6 +210,13 @@ struct Args {
     /// Without it, THEM is everything the speakers play.
     #[arg(long, env = "IV_HEAR")]
     hear: Option<String>,
+
+    /// Listen and log all day, but never advise unbidden: advice comes only
+    /// from F7 and F8. `/coach on` arms it for the session, `/coach off` mutes
+    /// it again. Pause (F5) is the other thing and stays that way — it stops
+    /// transcription outright, so nothing is written down either.
+    #[arg(long, env = "IV_MANUAL")]
+    manual: bool,
 
     /// List the apps with audio on the loopback device and exit
     #[arg(long)]
@@ -342,6 +354,7 @@ fn route(
     tx: Sender<Msg>,
     coach: Option<coach::Coach>,
     min_words: usize,
+    manual: bool,
     log: Option<log::Log>,
     mut roster: roster::Roster,
     services: ContextServices,
@@ -360,6 +373,15 @@ fn route(
     let mut called: Option<String> = None;
     let mut last_them = String::new();
     let mut advice = (0, String::new());
+    // Whether a far-end turn asks the coach on its own. Off is the all-day
+    // shape: an assistant left running through a working day would otherwise
+    // spend a request on every overheard sentence — a meeting, a video, a
+    // colleague at the next desk — and answer questions nobody asked. Turns are
+    // still transcribed, named, logged and kept in history while it is off, so
+    // when advice is armed it already knows what has been said. That is the
+    // difference from Pause, which stops transcription and writes nothing down.
+    let mut coaching = !manual;
+    let _ = tx.send(Msg::Coaching(coaching));
     let mut paused = false;
 
     while let Ok(mut m) = rx.recv() {
@@ -379,6 +401,20 @@ fn route(
                 // has not started yet.
                 if let Some(spec) = question.strip_prefix("/hear") {
                     set_hearing(&tune, &tx, spec.trim());
+                    continue;
+                }
+                if let Some(spec) = question.strip_prefix("/coach") {
+                    coaching = match spec.trim() {
+                        "on" => true,
+                        "off" => false,
+                        // Anything else reports. A typo must not silently arm
+                        // or mute an assistant that is meant to run all day.
+                        _ => coaching,
+                    };
+                    if !coaching && let Some(coach) = &coach {
+                        coach.cancel();
+                    }
+                    let _ = tx.send(Msg::Coaching(coaching));
                     continue;
                 }
                 refresh_corpus(&mut corpus, &mut roster, &persona, &coach, &tune, &tx);
@@ -493,6 +529,7 @@ fn route(
             });
             refresh_corpus(&mut corpus, &mut roster, &persona, &coach, &tune, &tx);
             if let Some(coach) = &coach
+                && coaching
                 && who.is_them()
                 && text.split_whitespace().count() >= min_words
             {
@@ -829,6 +866,7 @@ fn main() -> Result<()> {
                 tx,
                 coach,
                 args.min_words,
+                args.manual,
                 log,
                 roster,
                 ContextServices {
