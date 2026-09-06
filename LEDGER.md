@@ -7,6 +7,29 @@ Update the **Now** block after every work session. Nothing else here is chronolo
 
 ## Now
 
+**Provider chosen (2026-09-06):** `openrouter` + `google/gemini-3.5-flash-lite`,
+now the `.env` default. Same model both ways, measured on this machine with
+`--setup` and `live_provider_returns_advice`:
+
+| lane | turn 1 (cold) | turns 2-3 | `--setup` probe |
+|---|---|---|---|
+| openrouter google/gemini-3.5-flash-lite | 1.0 s | 557-943 ms | 656-886 ms |
+| gemini direct gemini-3.5-flash-lite | 4.0 s | 632-640 ms | 845-993 ms |
+
+Warm is a wash; the difference is entirely the *cold* path -- Google's is ~3.5 s,
+OpenRouter's ~0.4 s, small enough that the startup warm-up hides it. That
+settles open question 1 for now: not on warm latency, which no lane wins, but on
+the first turn, which is the one a call actually notices. Anthropic direct still
+has the only fast-mode + prompt-caching wire and is untested here because
+`ANTHROPIC_API_KEY` is empty; deepseek answers 402.
+
+**Do not put a reasoning model on the fast lane.** `openai/gpt-oss-120b` and
+`qwen/qwen3.7-flash` both fail `--setup` with "provider returned no advice":
+`probe` spends its 8 tokens and the model has emitted only reasoning deltas, no
+text. The verdict is right for this application -- a model that cannot say "OK"
+in 8 tokens will not put 2-4 lines on the panel inside ~1.2 s -- but the wording
+reads like a broken provider rather than a wrong model choice.
+
 **Provider warm-up (2026-09-06):** the coach's advice worker now spends one
 8-token throwaway request opening its pooled connection at startup, the way
 `audio::warm` spends one inference on CUDA. Measured with `--setup` on
