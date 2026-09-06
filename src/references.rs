@@ -144,17 +144,27 @@ impl References {
             .join("\r\n")
     }
     pub fn retrieve(&self, query: &str) -> String {
-        self.excerpts(query, true)
+        self.excerpts(query, true, 4, usize::MAX)
+    }
+    /// What research gets: wider than a glance, still bounded.
+    ///
+    /// Not "everything indexed" — 24 files × 400 KB does not fit a request —
+    /// but the ranker `retrieve` already uses, given room. Cut on whole
+    /// passages so a citation is never half a passage.
+    // Task 10 wires research routing to this; delete the allow then.
+    #[allow(dead_code)]
+    pub fn retrieve_deep(&self, query: &str) -> String {
+        self.excerpts(query, true, 40, 60_000)
     }
     pub fn local_answer(&self, query: &str) -> String {
-        let excerpts = self.excerpts(query, false);
+        let excerpts = self.excerpts(query, false, 4, usize::MAX);
         if excerpts.is_empty() {
             "No matching passages found.\r\n\r\nTry a name, product, date, or phrase used in your reference files. This is a local search; no AI service was contacted.".into()
         } else {
             format!("LOCAL REFERENCE MATCHES\r\n\r\n{excerpts}")
         }
     }
-    fn excerpts(&self, query: &str, for_model: bool) -> String {
+    fn excerpts(&self, query: &str, for_model: bool, limit: usize, cap: usize) -> String {
         let library = self.library.read().unwrap_or_else(|e| e.into_inner());
         let terms = terms(query);
         let mut hits = Vec::new();
@@ -175,9 +185,9 @@ impl References {
         } else {
             String::new()
         };
-        for (_, di, ci) in hits.into_iter().take(4) {
+        for (_, di, ci) in hits.into_iter().take(limit) {
             let d = &library.documents[di];
-            out.push_str(&format!(
+            let entry = format!(
                 "\n[{}, passage {}]\n{}\n",
                 // The body is JSON-escaped; a filename is user data in the same
                 // header and must not close a citation the model reads as structure.
@@ -192,7 +202,11 @@ impl References {
                 } else {
                     d.chunks[ci].clone()
                 }
-            ));
+            );
+            if out.len() + entry.len() > cap {
+                break;
+            }
+            out.push_str(&entry);
         }
         out
     }
@@ -295,6 +309,36 @@ mod tests {
         assert!(refs.retrieve("unrelated bananas").is_empty());
         refs.clear();
         assert!(refs.retrieve("rollback").is_empty());
+    }
+    #[test]
+    fn deep_retrieval_returns_more_passages_but_stays_bounded() {
+        let (tx, _) = crossbeam_channel::unbounded();
+        let refs = References::new(tx);
+        // 50 passages that all match, each ~2.5 KB. Sized so the byte cap is
+        // what cuts, not the 40-passage window: at 1.4 KB the 40 kept passages
+        // come to 56 KB and the length assertion below passes with no cap at
+        // all. `take(limit)` is proven by the 4 the shallow call returns.
+        let chunks: Vec<String> = (0..50)
+            .map(|i| format!("rollback plan variant {i} {}", "x".repeat(2_500)))
+            .collect();
+        refs.library
+            .write()
+            .unwrap()
+            .documents
+            .push(Document::new(PathBuf::from("plan.txt"), chunks));
+        let shallow = refs.retrieve("rollback plan");
+        let deep = refs.retrieve_deep("rollback plan");
+        // The whole citation prefix, not "passage ": the banner above the
+        // excerpts says "Cite [filename, passage N]" and would count as one.
+        let cited = |s: &str| s.matches("[plan.txt, passage ").count();
+        assert_eq!(cited(&shallow), 4);
+        assert!(cited(&deep) > 4);
+        assert!(
+            deep.len() <= 60_000 + 1_500,
+            "cap is per whole passage: {}",
+            deep.len()
+        );
+        assert!(cited(&deep) <= 40);
     }
     #[test]
     fn chunks_are_bounded_and_complete() {
