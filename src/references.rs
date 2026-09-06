@@ -111,6 +111,23 @@ impl References {
                             "Reference limit reached (24 files). Clear references to start again."
                                 .into()
                         }
+                        // A deleted file would otherwise stay indexed and stay
+                        // stale, so every turn re-read it and every turn failed —
+                        // while the panel went on citing passages of a file that
+                        // is gone, which Decision 9 forbids. Only NotFound drops
+                        // a document: a sharing violation is a file mid-rewrite.
+                        // ponytail: one stat per turn, so an editor that saves by
+                        // delete-and-rename can land inside the window and lose
+                        // the file until it is dropped again — two strikes before
+                        // removing would close that.
+                        Err(e)
+                            if e.downcast_ref::<std::io::Error>()
+                                .is_some_and(|io| io.kind() == std::io::ErrorKind::NotFound)
+                                && library.documents.iter().any(|d| d.path == path) =>
+                        {
+                            library.documents.retain(|d| d.path != path);
+                            format!("Removed: {name} — the file is gone")
+                        }
                         Err(e) => format!("Couldn't read {name}: {e:#}"),
                     }
                 };
@@ -184,7 +201,15 @@ impl References {
         };
         paths.sort();
         paths.extend(self.manifest().into_iter().map(PathBuf::from));
+        // `import` silently drops the tail past the limit; sent after it so the
+        // notice is not buried under the "Reading: …" lines it explains.
+        let skipped = paths.len().saturating_sub(MAX_FILES);
         self.import(paths);
+        if skipped > 0 {
+            let _ = self.tx.send(Msg::ReferenceStatus(format!(
+                "Reference limit reached ({MAX_FILES} files): {skipped} more in the folder/manifest were not loaded"
+            )));
+        }
     }
     /// Imported files whose file on disk has changed since.
     pub fn stale(&self) -> Vec<PathBuf> {
@@ -242,8 +267,15 @@ impl References {
             .unwrap_or_default();
         let library = self.library.read().unwrap_or_else(|e| e.into_inner());
         if library.documents.is_empty() {
+            // Without a folder nothing survives the session; with one, saying so
+            // would be a lie the folder line above has already contradicted.
+            let persistence = if prefix.is_empty() {
+                "Documents stay in memory for this session."
+            } else {
+                "Files in this folder, and files you drop, are re-read at every launch."
+            };
             return format!(
-                "{prefix}Drop reference files into this window.\r\n\r\nSupported: {}.\r\n\r\nDocuments stay in memory for this session. Relevant passages are selected by word matching, with filename and passage citations.",
+                "{prefix}Drop reference files into this window.\r\n\r\nSupported: {}.\r\n\r\n{persistence} Relevant passages are selected by word matching, with filename and passage citations.",
                 crate::extract::FORMATS
             );
         }
@@ -269,6 +301,11 @@ impl References {
         // The re-read lands on the import thread, so this retrieval may still
         // read the old text and the next one will not. Blocking a turn on a
         // 10 MB PDF to be current instead would cost more than it buys.
+        // ponytail: the sweep itself is not free — `stale` stats every indexed
+        // file on the router thread, so one remembered drop on a mapped drive
+        // that has gone away holds the turn for the SMB timeout before
+        // `coach.ask` is even called. Move the sweep into the import worker and
+        // read only its last result here if that ever bites.
         self.import(self.stale());
         self.excerpts(query, true, 4, usize::MAX)
     }
@@ -278,12 +315,14 @@ impl References {
     /// but the ranker `retrieve` already uses, given room. Cut on whole
     /// passages so a citation is never half a passage.
     pub fn retrieve_deep(&self, query: &str) -> String {
-        // As in `retrieve`: the re-read is queued, not awaited.
+        // As in `retrieve`: the re-read is queued, not awaited — and the sweep
+        // carries the same cost, see the ponytail note there.
         self.import(self.stale());
         self.excerpts(query, true, 40, 60_000)
     }
     pub fn local_answer(&self, query: &str) -> String {
-        // As in `retrieve`: the re-read is queued, not awaited.
+        // As in `retrieve`: the re-read is queued, not awaited — and the sweep
+        // carries the same cost, see the ponytail note there.
         self.import(self.stale());
         let excerpts = self.excerpts(query, false, 4, usize::MAX);
         if excerpts.is_empty() {
@@ -478,6 +517,27 @@ mod tests {
             "the old text was replaced, not appended"
         );
         assert!(refs.stale().is_empty());
+    }
+    #[test]
+    fn a_deleted_file_leaves_the_index_instead_of_being_retried_every_turn() {
+        let dir = folder("deleted");
+        let file = dir.join("gone.txt");
+        std::fs::write(&file, "owner is Sarah").unwrap();
+        let (tx, _) = crossbeam_channel::unbounded();
+        let refs = References::new(tx, Some(dir.clone()));
+        refs.import_folder();
+        wait_until(&refs, |p| p.contains("gone.txt"));
+        // Canonicalise before the delete: it is a filesystem lookup and fails after.
+        let canonical = file.canonicalize().unwrap();
+        std::fs::remove_file(&file).unwrap();
+        assert_eq!(refs.stale(), vec![canonical]);
+        refs.import(refs.stale());
+        let p = wait_until(&refs, |p| !p.contains("gone.txt"));
+        assert!(!p.contains("gone.txt"), "{p}");
+        assert!(refs.retrieve("owner").is_empty());
+        // Nothing left to retry, and a folder file is never remembered as a drop.
+        assert!(refs.stale().is_empty());
+        assert!(!dir.join(".dropped").exists());
     }
     #[test]
     fn retrieval_selects_evidence_and_cites_source() {
