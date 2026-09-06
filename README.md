@@ -159,7 +159,7 @@ file is in the launch directory, otherwise under a built-in prompt
 (`--research-prompt`, `IV_RESEARCH_PROMPT`; `--research-prompt` resolves on its
 own, not relative to `--prompt`).
 
-Setting `--agent-cmd` switches research to a CLI (Claude Code or Codex) instead;
+Setting `--agent-cmd` switches research to Claude Code instead;
 the CLI wins wherever it is configured, so exactly one lane is live per session.
 To use it, install/authenticate the CLI, then configure its actual executable:
 
@@ -172,36 +172,32 @@ at `%APPDATA%\npm\node_modules\@anthropic-ai\claude-code\bin\claude.exe`
 (the `claude` on PATH is a shim). It runs with settings, hooks and MCP servers
 off and read-only tools only, and reads `knowledge/` and `references/` live
 from disk. Its output format is pinned to a captured run
-(`tests/fixtures/claude-stream.jsonl`). Codex remains supported but unverified.
+(`tests/fixtures/claude-stream.jsonl`).
 The default root is the app folder, which holds `.env`: the tools are read-only
 and the prompt points the CLI at `knowledge/` and `references/`, but nothing
 stops it opening other files there — point `--agent-root` elsewhere if that
 matters to you.
 
-The Codex adapter uses `codex exec --json`, read-only sandbox, no automatic
-approvals, ignored user configuration/rules, and ephemeral sessions. It requires
-a CLI supporting those flags (`codex exec --help`). Transcript text goes through
-stdin, never a shell. Hidden processes belong to a Windows Job Object; deadlines
+Transcript text goes through stdin, never a shell. Hidden processes belong to a
+Windows Job Object; deadlines
 (90 seconds by default, applied to the CLI child), cancellation, and app exit
 terminate the process tree. Each output stream is truncated at 1 MB rather than
 failing the job. Only one research job runs at a time.
 
 `--agent-root` is a working directory, not a filesystem read boundary. The prompt
-requests research within it; the sandbox enforces write restrictions. Research
+requests research within it; the CLI is configured with read-only tools. Research
 sends context to the CLI's service and may incur charges. A result survives newer
 speech and stays available to later coaching turns, truncated to 2,000 characters
 so it cannot crowd real speech out of the 24-turn window. A failed job is shown
 and logged but never enters that window.
 
-The *Codex* adapter has not yet been exercised against a real Codex CLI, so treat
-its event parsing as unverified: if it returns "no answer", the error quotes the
-first line the CLI produced, which is the thing to report. The HTTP lane has been
-run live against Gemini.
+The HTTP lane has been run live against Gemini. No CLI is required for provider
+research. To return to it from an old CLI configuration, remove `--agent-cmd`
+and unset `IV_AGENT_CMD` in your environment and `.env`.
 
-Research needs a provider or a CLI, so `--provider none` with neither leaves it
-off. Speech never triggers it; the fast coach has no tools. This release supports
-Claude Code and Codex as CLI adapters. The historical OpenCode adapter in the
-ledger remains a future alternative.
+Research requires an enabled provider; `--provider none` disables it and rejects
+a configured research CLI. Speech never triggers it; the fast coach has no
+tools. Claude Code is the only supported optional research CLI.
 
 ## File search
 
@@ -211,7 +207,7 @@ indexed. The app does not change indexing settings.
 ```powershell
 .\target\release\inner-voice.exe --search-files 'coach.rs' --es .\es.exe
 # Include matching filenames in manually triggered research:
-.\target\release\inner-voice.exe --agent-cmd 'C:\path\to\codex.exe' --search-query 'migration'
+.\target\release\inner-voice.exe --agent-cmd 'C:\path\to\claude.exe' --search-query 'migration'
 ```
 
 Literal filename/path search is capped at 20 results and five seconds. It does

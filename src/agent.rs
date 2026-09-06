@@ -21,22 +21,15 @@ pub struct Config {
     pub es: PathBuf,
 }
 
-/// Which CLI's dialect to speak, decided by the executable's own name.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum Adapter {
-    Claude,
-    Codex,
-}
-
-fn adapter(executable: &std::path::Path) -> Adapter {
-    match executable
-        .file_stem()
-        .map(|s| s.to_string_lossy().to_lowercase())
-        .as_deref()
-    {
-        Some("claude") => Adapter::Claude,
-        _ => Adapter::Codex,
-    }
+/// The optional research CLI speaks Claude Code's stream-json protocol.
+pub fn validate_executable(executable: &std::path::Path) -> Result<()> {
+    anyhow::ensure!(
+        executable
+            .file_name()
+            .is_some_and(|name| name.eq_ignore_ascii_case("claude.exe")),
+        "--agent-cmd must point to Claude Code's claude.exe; remove --agent-cmd / IV_AGENT_CMD to use provider research"
+    );
+    Ok(())
 }
 
 pub struct Agent {
@@ -98,6 +91,7 @@ impl Agent {
 }
 
 fn research(config: &Config, transcript: &str, cancel: &AtomicBool) -> Result<String> {
+    validate_executable(&config.executable)?;
     let mut sources = String::new();
     if let Some(query) = &config.search {
         match search::files(&config.es, query, cancel) {
@@ -121,56 +115,30 @@ fn research(config: &Config, transcript: &str, cancel: &AtomicBool) -> Result<St
     );
     let mut command = Command::new(&config.executable);
     command.current_dir(&config.root);
-    match adapter(&config.executable) {
-        // Keeps the subscription login, drops hooks/plugins/MCP: measured at
-        // 6.5 K cache tokens and ~5 s against 37 K and ~$0.75 through the
-        // interactive harness. `--bare` would drop the login too. Read-only
-        // tools only — in `-p` mode anything else is denied, never prompted.
-        Adapter::Claude => {
-            command.args([
-                "-p",
-                "--output-format",
-                "stream-json",
-                "--verbose",
-                "--strict-mcp-config",
-                "--setting-sources",
-                "",
-                "--allowedTools",
-                "Read,Grep,Glob",
-                // Deny beats allow, and unlike a settings file it survives
-                // `--setting-sources ""`. The root is the app folder, which is
-                // where `.env` (provider keys) lives. Unverified against the CLI
-                // until the first real press: a rejected flag surfaces as
-                // `unknown option` inside the no-answer error, which is exactly
-                // what the first F8 through claude.exe is checking.
-                "--disallowedTools",
-                "Read(./.env)",
-                "--max-turns",
-                "6",
-            ]);
-            let output = process::run(command, prompt, config.timeout, cancel)?;
-            response_claude(&output)
-        }
-        Adapter::Codex => {
-            command.args([
-                "exec",
-                "--ignore-user-config",
-                "--ignore-rules",
-                "--ephemeral",
-                "--sandbox",
-                "read-only",
-                "--skip-git-repo-check",
-                "--json",
-                "--color",
-                "never",
-                "-c",
-                "approval_policy=\"never\"",
-                "-",
-            ]);
-            let output = process::run(command, prompt, config.timeout, cancel)?;
-            response(&output)
-        }
-    }
+    // Preserve Claude Code's read-only tools and subscription authentication.
+    command.args([
+        "-p",
+        "--output-format",
+        "stream-json",
+        "--verbose",
+        "--strict-mcp-config",
+        "--setting-sources",
+        "",
+        "--allowedTools",
+        "Read,Grep,Glob",
+        // Deny beats allow, and unlike a settings file it survives
+        // `--setting-sources ""`. The root is the app folder, which is
+        // where `.env` (provider keys) lives. Unverified against the CLI
+        // until the first real press: a rejected flag surfaces as
+        // `unknown option` inside the no-answer error, which is exactly
+        // what the first F8 through claude.exe is checking.
+        "--disallowedTools",
+        "Read(./.env)",
+        "--max-turns",
+        "6",
+    ]);
+    let output = process::run(command, prompt, config.timeout, cancel)?;
+    response_claude(&output)
 }
 
 /// Claude Code's `stream-json`: one object per line, the answer on the
@@ -219,98 +187,23 @@ fn response_claude(output: &str) -> Result<String> {
     );
 }
 
-fn response(output: &str) -> Result<String> {
-    let mut text = String::new();
-    let mut failure = None;
-    for line in output.lines().filter(|l| !l.trim().is_empty()) {
-        // The CLI writes human-readable lines to stdout too — banners, update
-        // notices — which is why `--color never` is passed. One of them is
-        // noise, not a failed run: skip it rather than void the whole answer.
-        let Ok(event) = serde_json::from_str::<serde_json::Value>(line) else {
-            continue;
-        };
-        if event["type"] == "turn.failed" || event["type"] == "error" {
-            // Remembered, not raised: an error *after* a completed message
-            // (quota notice, cleanup failure) must not discard the answer.
-            failure = Some(
-                event["error"]["message"]
-                    .as_str()
-                    .or(event["message"].as_str())
-                    .unwrap_or("CLI error")
-                    .to_string(),
-            );
-        }
-        if event["type"] == "item.completed"
-            && event["item"]["type"] == "agent_message"
-            && let Some(part) = event["item"]["text"].as_str()
-        {
-            text.push_str(part);
-            text.push('\n');
-        }
-    }
-    if text.trim().is_empty() {
-        if let Some(message) = failure {
-            // Same cap as the Claude lane: the notice line is not a log file.
-            bail!(
-                "research failed: {}",
-                message.chars().take(2_000).collect::<String>()
-            );
-        }
-        // Quote a line: this adapter has never met the real CLI, and an
-        // unrecognised event shape is otherwise indistinguishable from silence.
-        bail!(
-            "research returned no answer; first output line: {}",
-            output
-                .lines()
-                .find(|l| !l.trim().is_empty())
-                .unwrap_or("<empty>")
-                .chars()
-                .take(200)
-                .collect::<String>()
-        );
-    }
-    Ok(text.chars().take(16_000).collect())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     #[test]
-    fn extracts_only_agent_messages_and_reports_failures() {
-        assert_eq!(response("{\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",\"text\":\"ASK why\"}}\n").unwrap(), "ASK why\n");
-        assert!(
-            response("{\"type\":\"turn.failed\",\"error\":{\"message\":\"quota\"}}")
+    fn research_cli_requires_claude_and_explains_provider_fallback() {
+        for name in [r"C:\tools\claude.exe", r"C:\tools\CLAUDE.EXE"] {
+            validate_executable(std::path::Path::new(name)).unwrap();
+        }
+        for name in ["other.exe", "claude.cmd", "claude", ""] {
+            let error = validate_executable(std::path::Path::new(name))
                 .unwrap_err()
-                .to_string()
-                .contains("quota")
-        );
-        assert!(response("{\"type\":\"thread.started\"}").is_err());
+                .to_string();
+            assert!(error.contains("IV_AGENT_CMD"), "{error}");
+            assert!(error.contains("provider research"), "{error}");
+        }
     }
-    #[test]
-    fn keeps_the_answer_through_stdout_noise_and_a_late_error() {
-        let answer = "{\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",\"text\":\"ASK why\"}}";
-        assert_eq!(
-            response(&format!(
-                "codex 0.1.0 — update available\n{answer}\n{{\"type\":\"error\",\"message\":\"quota\"}}\n"
-            ))
-            .unwrap(),
-            "ASK why\n"
-        );
-        // No answer collected: the failure is what the user needs to see.
-        assert!(
-            response("banner\n{\"type\":\"error\",\"message\":\"quota\"}")
-                .unwrap_err()
-                .to_string()
-                .contains("quota")
-        );
-        // Nothing usable: quote the output so a schema mismatch is diagnosable.
-        assert!(
-            response("run `codex login` first")
-                .unwrap_err()
-                .to_string()
-                .contains("codex login")
-        );
-    }
+
     #[test]
     fn claude_answer_is_the_result_line_and_is_error_is_the_failure_signal() {
         let capture = include_str!("../tests/fixtures/claude-stream.jsonl");
@@ -332,20 +225,5 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(err.contains("some banner"), "{err}");
-    }
-    #[test]
-    fn adapter_is_chosen_by_the_executable_name() {
-        assert_eq!(
-            adapter(std::path::Path::new(r"C:\x\claude.exe")),
-            Adapter::Claude
-        );
-        assert_eq!(
-            adapter(std::path::Path::new(r"C:\x\CLAUDE.EXE")),
-            Adapter::Claude
-        );
-        assert_eq!(
-            adapter(std::path::Path::new(r"C:\x\codex.exe")),
-            Adapter::Codex
-        );
     }
 }

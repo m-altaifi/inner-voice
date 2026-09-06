@@ -188,6 +188,11 @@ pub fn run(inputs: &Inputs, enumerator: &DeviceEnumerator) -> Vec<Check> {
     checks.push(folder("references", &inputs.references, true));
 
     checks.push(match &inputs.agent_cmd {
+        Some(exe) if crate::agent::validate_executable(Path::new(exe)).is_err() => Check {
+            name: "research",
+            ok: false,
+            detail: "unsupported research CLI: use Claude Code's claude.exe, or unset IV_AGENT_CMD / --agent-cmd for provider research".into(),
+        },
         Some(exe) if Path::new(exe).is_file() => Check {
             name: "research",
             ok: true,
@@ -201,7 +206,7 @@ pub fn run(inputs: &Inputs, enumerator: &DeviceEnumerator) -> Vec<Check> {
         None => Check {
             name: "research",
             ok: true,
-            detail: "optional: F8 uses the provider; set IV_AGENT_CMD to route it through a CLI"
+            detail: "optional: F8 uses the provider; set IV_AGENT_CMD to route it through Claude Code"
                 .into(),
         },
     });

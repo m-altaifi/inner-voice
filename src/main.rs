@@ -176,7 +176,7 @@ struct Args {
     #[arg(long, env = "IV_ALPHA", default_value_t = 240)]
     alpha: u8,
 
-    /// Route F8 research through this CLI .exe instead of the provider (codex.exe or Claude Code's claude.exe; no shell command strings)
+    /// Route F8 research through Claude Code's claude.exe instead of the provider
     #[arg(long, env = "IV_AGENT_CMD")]
     agent_cmd: Option<std::path::PathBuf>,
 
@@ -638,12 +638,7 @@ fn main() -> Result<()> {
             let executable = path
                 .canonicalize()
                 .context("finding --agent-cmd executable")?;
-            anyhow::ensure!(
-                executable
-                    .extension()
-                    .is_some_and(|e| e.eq_ignore_ascii_case("exe")),
-                "--agent-cmd must be an .exe (codex.exe, or Claude Code's bin\\claude.exe), not a shell script"
-            );
+            agent::validate_executable(&executable)?;
             let root = args
                 .agent_root
                 .canonicalize()

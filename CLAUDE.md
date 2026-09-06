@@ -12,8 +12,8 @@ after the script name is forwarded to cargo.
 
 ```powershell
 .\build.ps1 build --release
-.\build.ps1 test
-.\build.ps1 test emits_one_utterance      # single test by name substring
+.\build.ps1 test --release                 # debug links fail: prebuilt onnxruntime is /MD, knf-rs-sys goes /MDd (LNK2038)
+.\build.ps1 test --release emits_one_utterance   # single test by name substring
 .\build.ps1 run --release -- --list-devices
 ```
 
@@ -93,8 +93,8 @@ captured just before the pause still lands. Do not describe pause as a hard
 barrier past the audio worker.
 
 Current additions (2026-09-05): `history.rs` owns the typed 24-turn context.
-`agent.rs` runs optional hotkey-triggered CLI research — the adapter follows the
-`--agent-cmd` file stem, `claude` or Codex; `process.rs` contains
+`agent.rs` runs optional hotkey-triggered research through Claude Code's
+`claude.exe` (`--agent-cmd`; anything else is rejected at startup); `process.rs` contains
 hidden subprocesses with Job Objects, cancellation, deadlines, and output caps.
 `search.rs` uses bounded Everything UTF-8 exports. `setup.rs` runs the `--setup`
 checks and renders them; it calls `audio::warm`, `audio::sessions`,
@@ -251,18 +251,15 @@ Traps here, each already paid for once (see LEDGER):
   the far end. Both endpoint pumps — including the fallback taken when the app
   client cannot open — stay deafened while the voice talks, or the panel coaches
   on its own advice.
-- **Research has never been run against the real Codex CLI.** `agent.rs` extracts
-  the answer via `event["item"]["type"] == "agent_message"`; if Codex actually
-  tags that field `item_type`, every research returns "no answer" and the whole
-  feature is inert. Nothing offline can settle it — one real `codex exec --json`
-  capture can. The no-answer error quotes the first output line so a shape
-  mismatch reads as a mismatch instead of silence. Do not "fix" the schema by
-  guessing; get the capture. The CLI is no longer the only lane — F8 runs over
-  the coaching provider by default (`Coach::research`) and that lane *has* been
-  run live against Gemini; `--agent-cmd` switches to the CLI, and the router
-  keeps exactly one lane live per session. So the risk is now confined to
-  `agent.rs`'s Codex adapter, not to the feature — the `claude` adapter beside
-  it is pinned to a captured run (`tests/fixtures/claude-stream.jsonl`).
+- **The CLI research lane is Claude Code only.** `agent.rs` accepts nothing but
+  `claude.exe` (the Codex adapter was removed on 2026-09-06; the user has no
+  Codex access) and parses its `stream-json` pinned to a captured run
+  (`tests/fixtures/claude-stream.jsonl`). Still unverified offline: the
+  `--disallowedTools Read(./.env)` flag — a rejected flag surfaces as `unknown
+  option` inside the no-answer error on the first real F8 press. F8 runs over the
+  coaching provider by default (`Coach::research`), which *has* been run live
+  against Gemini; `--agent-cmd` switches to the CLI, and the router keeps exactly
+  one lane live per session.
 - **Every `AdviceStart` must get an `AdviceEnd`.** `ask` supersedes by announcing
   a *newer* generation, so the panel moves on by itself; `cancel` has no
   successor and must close the generation it retires, or the panel sits on

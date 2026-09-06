@@ -7,6 +7,31 @@ Update the **Now** block after every work session. Nothing else here is chronolo
 
 ## Now
 
+**CLI cleanup (2026-09-06):** Removed the Codex research adapter and its event
+parser. Research continues through the configured provider (including Gemini)
+by default, with Claude Code as the optional CLI. Historical Codex references
+below and in the implementation plans describe removed behavior, not requirements.
+Old CLI settings should be cleared to use provider research.
+
+Verification (afternoon, in the rescue copy): `.\build.ps1 test --release` —
+77 unit tests, GPU transcription on the re-downloaded model, WASAPI loopback,
+and rustfmt all pass; live provider calls excluded. Debug-profile tests do not
+link on this machine (prebuilt onnxruntime is /MD, knf-rs-sys goes /MDd), so
+`--release` is the rule, now in CLAUDE.md.
+
+**Disk incident (2026-09-06):** the morning's "unresolved" failures had one
+cause — the drive behind E: (Seagate ST2000DM008, also D:) is failing: NTFS
+logged index corruption on E: at 12:25 and bad blocks from 12:39. It garbled
+CLAUDE.md on disk (same size and mtime, so git saw it as clean), two loose git
+blobs (LEDGER.md at 5ac85bb, Cargo.lock at df57574), `target/release`, and the
+whisper model (CRC error on read). The project was rescue-copied to
+`C:\Users\Mohammed\OpenSources\katie\inner-voice` (485 of 486 files; the model
+was the one failure and was re-downloaded, sha256-verified). Both blobs were
+rebuilt byte-exact from the review diffs under `.superpowers/sdd/` and
+CLAUDE.md rewritten from HEAD, in both copies. The C: copy is the live one and
+this commit is made there; E: needs `chkdsk E: /f` and a replacement drive.
+Nothing on E: is trusted until then.
+
 **Wave 3 — shippable (2026-09-06):** `--setup` (`setup.rs`) checks model, CUDA
 (timed warm-up), devices, playing apps, provider (`coach::probe`: one tiny
 request, TTFT in ms, comparable across providers; a live turn reads higher),
@@ -24,11 +49,11 @@ coach and the new glossary to whisper through `RwLock`s; references live in
 `references/`, drops are remembered by path in `.dropped`, `(path, mtime)` is a
 document's identity so an edit replaces its passages. The default research lane
 is HTTP over the coaching provider; the CLI lane runs only with `--agent-cmd`,
-and speaks Claude Code's `claude.exe` when the executable's name says so —
+and accepts only Claude Code's `claude.exe` —
 settings/hooks/MCP off, read-only tools, pinned to a captured `stream-json` run:
 6.5 K cache tokens and ~5 s per press versus 37 K / $0.75 through the
-interactive harness; `--bare` drops the subscription login. Codex stays
-unverified. Known gap: a remembered drop whose file is gone is
+interactive harness; `--bare` drops the subscription login.
+Known gap: a remembered drop whose file is gone is
 reported once per launch until Clear references.
 
 **Wave 1 — glance & hearing (2026-09-06):** Decision 7 back in egui (`Tag` for
