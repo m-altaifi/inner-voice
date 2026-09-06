@@ -13,8 +13,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 use wasapi::{
-    Device, DeviceEnumerator, Direction, SampleType, SessionState, StreamMode, WaveFormat,
-    initialize_mta,
+    AudioCaptureClient, AudioClient, Device, DeviceEnumerator, Direction, SampleType, SessionState,
+    StreamMode, WaveFormat, initialize_mta,
 };
 use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperState};
 
@@ -22,12 +22,7 @@ pub const RATE: usize = 16_000;
 pub const FRAME_MS: usize = 20;
 pub const FRAME: usize = RATE * FRAME_MS / 1000;
 
-// The `allow(dead_code)` on the four items below: Tasks 7 and 9 wire `--hear`
-// and `--list-apps` to them; delete the allows then. Per item rather than a
-// module-wide one, so they come off with that wiring instead of hiding real rot
-// in `audio.rs` forever.
 /// One app with an audio session on the loopback endpoint.
-#[allow(dead_code)]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AppSession {
     pub pid: u32,
@@ -39,7 +34,11 @@ pub struct AppSession {
 }
 
 /// Every app with a session on `dev`, system sounds excluded.
-#[allow(dead_code)]
+///
+/// A session that cannot be read is skipped, not fatal: sessions come and go
+/// while the list is being walked, and the reacquire loop calls this every two
+/// seconds — one unrelated app closing mid-walk must not cost the caller its
+/// whole listing.
 pub fn sessions(dev: &Device) -> Result<Vec<AppSession>> {
     let list = dev
         .get_iaudiosessionmanager()?
@@ -47,7 +46,9 @@ pub fn sessions(dev: &Device) -> Result<Vec<AppSession>> {
     let mut out = Vec::new();
     for i in 0..list.get_count()? {
         let session = list.get_session(i)?;
-        let pid = session.get_process_id()?;
+        let Ok(pid) = session.get_process_id() else {
+            continue;
+        };
         if pid == 0 {
             continue; // the system-sounds session has no process
         }
@@ -58,15 +59,20 @@ pub fn sessions(dev: &Device) -> Result<Vec<AppSession>> {
         if name.is_empty() {
             continue;
         }
-        let active = matches!(session.get_state()?, SessionState::Active);
-        out.push(AppSession { pid, active, name });
+        let Ok(state) = session.get_state() else {
+            continue;
+        };
+        out.push(AppSession {
+            pid,
+            active: matches!(state, SessionState::Active),
+            name,
+        });
     }
     Ok(out)
 }
 
 /// Which session `--hear <name>` means: case-insensitive substring on the
 /// name, an active session over a silent one, else the first listed.
-#[allow(dead_code)]
 pub fn resolve(sessions: &[AppSession], wanted: &str) -> Option<u32> {
     let wanted = wanted.to_lowercase();
     let matching: Vec<&AppSession> = sessions
@@ -83,7 +89,6 @@ pub fn resolve(sessions: &[AppSession], wanted: &str) -> Option<u32> {
 /// Whether `pid` is still running. A process-loopback stream whose target
 /// exits delivers silence, not an error, so this is how a closed app is
 /// noticed and re-acquired under its new pid.
-#[allow(dead_code)]
 pub fn alive(pid: u32) -> bool {
     use windows::Win32::Foundation::{CloseHandle, STILL_ACTIVE};
     use windows::Win32::System::Threading::{
@@ -328,21 +333,28 @@ pub struct Input {
     pub name: String,
     pub gate_override: Option<f32>,
     pub mute: Option<Arc<AtomicBool>>,
+    /// Hear only this app's process tree as `THEM` (`--hear`). `None` is the
+    /// endpoint mix, as before.
+    pub hear: Option<String>,
 }
 
-pub fn run(input: Input, ctx: Arc<WhisperContext>, tx: Sender<Msg>, tune: Arc<Tune>) -> Result<()> {
-    let Input {
-        who,
-        dir,
-        name,
-        gate_override,
-        mute,
-    } = input;
-    initialize_mta().ok()?;
-    let dev = DeviceEnumerator::new()?
-        .get_device_collection(&dir)?
-        .get_device_with_name(&name)?;
+/// An open capture stream. `event` is set only for event-driven streams.
+struct Stream {
+    client: AudioClient,
+    capture: AudioCaptureClient,
+    event: Option<wasapi::Handle>,
+}
 
+impl Stream {
+    /// Stop before drop, so the next client — the reacquired app — opens
+    /// against a released endpoint.
+    fn close(self) {
+        let _ = self.client.stop_stream();
+    }
+}
+
+/// Loopback on the whole endpoint: everything the speakers play.
+fn open_endpoint(dev: &Device) -> Result<Stream> {
     let mut client = dev.get_iaudioclient()?;
     let fmt = WaveFormat::new(32, 32, &SampleType::Float, RATE, 1, None);
     let (_default_period, min_period) = client.get_device_period()?;
@@ -360,6 +372,61 @@ pub fn run(input: Input, ctx: Arc<WhisperContext>, tx: Sender<Msg>, tune: Arc<Tu
     )?;
     let capture = client.get_audiocaptureclient()?;
     client.start_stream()?;
+    Ok(Stream {
+        client,
+        capture,
+        event: None,
+    })
+}
+
+/// Loopback on one process tree: only that app, whatever else is playing.
+///
+/// `get_device_period` is unsupported on this client (crate docs), so the
+/// slack is fixed rather than derived. The same 16 kHz mono f32 is requested
+/// as for the endpoint, so nothing downstream learns which client fed it.
+fn open_process(pid: u32) -> Result<Stream> {
+    let fmt = WaveFormat::new(32, 32, &SampleType::Float, RATE, 1, None);
+    let mut client = AudioClient::new_application_loopback_client(pid, true)?;
+    client.initialize_client(
+        &fmt,
+        &Direction::Capture,
+        &StreamMode::PollingShared {
+            autoconvert: true,
+            buffer_duration_hns: 5_000_000,
+        },
+    )?;
+    let capture = client.get_audiocaptureclient()?;
+    client.start_stream()?;
+    Ok(Stream {
+        client,
+        capture,
+        event: None,
+    })
+}
+
+/// Everything the capture loop needs that is not the stream itself.
+struct Feed<'a> {
+    label: &'a str,
+    tx: &'a Sender<Msg>,
+    tune: &'a Arc<Tune>,
+    utt_tx: &'a Sender<(u64, Vec<f32>)>,
+    gate_override: Option<f32>,
+    mute: Option<&'a Arc<AtomicBool>>,
+}
+
+pub fn run(input: Input, ctx: Arc<WhisperContext>, tx: Sender<Msg>, tune: Arc<Tune>) -> Result<()> {
+    let Input {
+        who,
+        dir,
+        name,
+        gate_override,
+        mute,
+        hear,
+    } = input;
+    initialize_mta().ok()?;
+    let dev = DeviceEnumerator::new()?
+        .get_device_collection(&dir)?
+        .get_device_with_name(&name)?;
 
     // Transcription runs on its own thread, and this one only ever reads,
     // gates and segments — all microseconds.
@@ -449,6 +516,71 @@ pub fn run(input: Input, ctx: Arc<WhisperContext>, tx: Sender<Msg>, tune: Arc<Tu
         });
     }
 
+    let feed = Feed {
+        label: &label,
+        tx: &tx,
+        tune: &tune,
+        utt_tx: &utt_tx,
+        gate_override,
+        mute: mute.as_ref(),
+    };
+    let Some(app) = hear else {
+        // The endpoint mix, exactly as before: a stream error ends the thread
+        // and `main` reports it.
+        let stream = open_endpoint(&dev)?;
+        return pump(&stream, &feed, &mut || true);
+    };
+
+    // The app may not be running yet — the call app usually starts second —
+    // and may restart with a new pid mid-call. Neither is an error here.
+    let mut waiting_said = false;
+    loop {
+        let pid = match sessions(&dev).map(|list| resolve(&list, &app)) {
+            Ok(Some(pid)) => pid,
+            Ok(None) => {
+                if !waiting_said {
+                    tx.send(Msg::Sys(format!("hearing: waiting for {app}…")))?;
+                    waiting_said = true;
+                }
+                std::thread::sleep(Duration::from_secs(2));
+                continue;
+            }
+            Err(e) => {
+                tx.send(Msg::Sys(format!("hearing: {e}")))?;
+                std::thread::sleep(Duration::from_secs(2));
+                continue;
+            }
+        };
+        waiting_said = false;
+        let stream = match open_process(pid) {
+            Ok(stream) => stream,
+            Err(e) => {
+                tx.send(Msg::Sys(format!(
+                    "hearing: {app} failed: {e}; using the whole speaker mix"
+                )))?;
+                let stream = open_endpoint(&dev)?;
+                return pump(&stream, &feed, &mut || true);
+            }
+        };
+        tx.send(Msg::Sys(format!("hearing: {app} (pid {pid})")))?;
+        if let Err(e) = pump(&stream, &feed, &mut || alive(pid)) {
+            tx.send(Msg::Sys(format!("hearing: {app} stopped: {e}")))?;
+        }
+        stream.close();
+    }
+}
+
+/// Read, gate, segment — all microseconds — until the stream fails or
+/// `still_there` says the source is gone. Never transcribes: see the worker.
+fn pump(stream: &Stream, feed: &Feed, still_there: &mut dyn FnMut() -> bool) -> Result<()> {
+    let Feed {
+        label,
+        tx,
+        tune,
+        utt_tx,
+        gate_override,
+        mute,
+    } = feed;
     let mut raw: VecDeque<u8> = VecDeque::new();
     let mut frame = vec![0f32; FRAME];
     let mut cal: Vec<f32> = Vec::new();
@@ -458,9 +590,16 @@ pub fn run(input: Input, ctx: Arc<WhisperContext>, tx: Sender<Msg>, tune: Arc<Tu
     }
     let mut last = Instant::now();
     let calibrating_since = Instant::now();
+    let mut checked = Instant::now();
     let mut previous_epoch = tune.epoch.load(Ordering::SeqCst);
 
     loop {
+        if checked.elapsed() >= Duration::from_secs(2) {
+            checked = Instant::now();
+            if !still_there() {
+                anyhow::bail!("the app closed");
+            }
+        }
         // A silent render endpoint supplies no packets. Finish calibration by
         // wall clock so the first spoken second is not consumed as room noise.
         if seg.is_none() && calibrating_since.elapsed() >= Duration::from_secs(1) {
@@ -468,7 +607,10 @@ pub fn run(input: Input, ctx: Arc<WhisperContext>, tx: Sender<Msg>, tune: Arc<Tu
             tx.send(Msg::Sys(format!("{label} gate {g:.4}")))?;
             seg = Some(Segmenter::new(g));
         }
-        capture.read_from_device_to_deque(&mut raw)?;
+        if let Some(event) = &stream.event {
+            let _ = event.wait_for_event(100);
+        }
+        stream.capture.read_from_device_to_deque(&mut raw)?;
         let epoch = tune.epoch.load(Ordering::SeqCst);
         if epoch != previous_epoch {
             raw.clear();
@@ -492,7 +634,7 @@ pub fn run(input: Input, ctx: Arc<WhisperContext>, tx: Sender<Msg>, tune: Arc<Tu
                 last = Instant::now();
                 frame.fill(0.0);
                 if let Some(utt) = seg.push(&frame) {
-                    send(&utt_tx, epoch, utt)?;
+                    send(utt_tx, epoch, utt)?;
                 }
             }
             std::thread::sleep(Duration::from_millis(5));
@@ -524,11 +666,11 @@ pub fn run(input: Input, ctx: Arc<WhisperContext>, tx: Sender<Msg>, tune: Arc<Tu
             }
             let seg = seg.as_mut().unwrap();
 
-            if mute.as_ref().is_some_and(|m| m.load(Ordering::Relaxed)) {
+            if mute.is_some_and(|m| m.load(Ordering::Relaxed)) {
                 frame.fill(0.0); // the AI is talking; don't hear ourselves
             }
             if let Some(utt) = seg.push(&frame) {
-                send(&utt_tx, epoch, utt)?;
+                send(utt_tx, epoch, utt)?;
             }
         }
     }

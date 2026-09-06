@@ -631,6 +631,7 @@ fn main() -> Result<()> {
                 name,
                 gate_override: gate,
                 mute,
+                hear: None,
             };
             if let Err(e) = audio::run(input, ctx, tx.clone(), tune) {
                 let _ = tx.send(Msg::Sys(format!("{label} stopped: {e}")));
