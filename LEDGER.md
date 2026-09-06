@@ -7,6 +7,24 @@ Update the **Now** block after every work session. Nothing else here is chronolo
 
 ## Now
 
+**Provider warm-up (2026-09-06):** the coach's advice worker now spends one
+8-token throwaway request opening its pooled connection at startup, the way
+`audio::warm` spends one inference on CUDA. Measured with `--setup` on
+gemini-3.5-flash-lite: **3735 ms cold, 845-993 ms warm** across two passes, so
+without it the DNS + TCP + TLS cost landed on the call's *first* turn inside a
+~1.2 s budget. `probe` and the worker now share one `ttft(agent, provider)`, so
+the number `--setup` prints and the number a call pays are still the same
+measurement. It never runs under `--provider none` or `--preview` (no `Coach`
+is built).
+
+Readiness, measured today on the C: copy: `--setup` all-✓, `test --release`
+77 + GPU + loopback green. Provider lanes: gemini works; `ANTHROPIC_API_KEY` is
+empty in `.env`; deepseek answers **402** (out of credit), so open question 1
+is settled by billing rather than latency until a key is added.
+**Still the user's:** rotate the OpenRouter and Gemini keys that appear in an
+earlier chat transcript, and the real acceptance call with
+`--hear <app> --speak --dump clips`.
+
 **CLI cleanup (2026-09-06):** Removed the Codex research adapter and its event
 parser. Research continues through the configured provider (including Gemini)
 by default, with Claude Code as the optional CLI. Historical Codex references

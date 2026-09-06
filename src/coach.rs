@@ -32,11 +32,16 @@ const RESEARCH_MAX_TOKENS: u32 = 2_000;
 /// status line shows as `first word` on a call, so a user choosing between
 /// providers compares like with like.
 pub fn probe(provider: &Provider) -> Result<Duration> {
-    let agent = pooled_agent();
+    ttft(&pooled_agent(), provider)
+}
+
+/// The same request on a caller-supplied agent, so the advice worker can warm
+/// *its own* pooled connection at startup — see `Coach::new`.
+fn ttft(agent: &ureq::Agent, provider: &Provider) -> Result<Duration> {
     let started = std::time::Instant::now();
     let mut first: Option<Duration> = None;
     let done = request(
-        &agent,
+        agent,
         provider,
         "Reply with the single word OK.",
         "OK?",
@@ -123,6 +128,15 @@ impl Coach {
         let system = prompt.clone();
         std::thread::spawn(move || {
             let agent = pooled_agent();
+            // Warm the connection the way `audio::warm` warms CUDA, and for the
+            // same reason: the first request pays DNS, TCP and the TLS
+            // handshake, measured at 3735 ms cold against 845 ms warm — and
+            // without this it lands on the call's *first* turn, inside a
+            // ~1.2 s budget. One 8-token throwaway, off the critical path
+            // while the 574 MB model is still loading. A failure here is not
+            // reported: `--setup` is where a dead provider is diagnosed, and
+            // the first real turn still surfaces its own error.
+            let _ = ttft(&agent, &advice_provider);
             while let Ok((generation, transcript)) = rx.recv() {
                 if live.load(Ordering::SeqCst) != generation {
                     continue;
