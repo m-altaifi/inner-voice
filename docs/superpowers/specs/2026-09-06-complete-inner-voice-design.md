@@ -188,10 +188,14 @@ gains that prefix.
 
 ### 4.3 `--speak` (`src/speak.rs`, `src/main.rs`)
 
-Kept. `Speaker::new(mute: Option<Arc<AtomicBool>>)`; `main` passes `Some` only
-when `speak && hear.is_none()`, with the startup notice
-`speak: reading advice mutes the call; add --hear <app> so it doesn't`. With
-`--hear`, TTS is another process and is never captured: no mute, no lost speech.
+Kept. `Speaker::new(mute: Arc<AtomicBool>)`; `main` creates the mute whenever
+`--speak` is on and the capture paths decide who honours it: both endpoint pumps
+do (including the fallback taken when the app client cannot open), the
+process-loopback feed opts out because the voice is another process. The startup
+notice `speak: reading advice mutes the call; add --hear <app> so it doesn't`
+fires only for `--speak` without `--hear`. *(Amended after Wave 1's final review:
+the original "mute only when `speak && hear.is_none()`" left the endpoint
+fallback with no mute.)*
 The compiled default stays off; `.env.example` ships `IV_SPEAK=true` for the user's
 machine ("activated" is read as: on, on this machine, by configuration).
 
