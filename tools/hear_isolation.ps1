@@ -1,7 +1,15 @@
 # Proves --hear isolates one app: two processes speak different sentences at
 # the same time through the speakers, the panel hears only one of them, and
-# only that sentence's words reach THEM. The microphone will pick up both from
-# the speakers as YOU -- that is expected and is why only THEM lines are judged.
+# only that sentence's words reach the far end. The microphone will pick up both
+# from the speakers as YOU -- that is expected, and is why only the far-end
+# lines are judged.
+#
+# The far end is every log line that is *not* YOU, not the ones matching
+# "who":"THEM": once the roster binds a name, a far-end turn is logged under
+# that name instead ("who":"Sarah Chen" happened on a real run), so matching
+# THEM would drop it silently -- failing the elephant check while --hear works,
+# and missing a giraffe that leaked under a name. Log lines are
+# {"t":...,"text":...,"who":...}, in that order.
 #
 # Speech comes from SAPI in each process directly, so the audio session belongs
 # to that process. The two shells have different image names -- `pwsh` and
@@ -29,8 +37,8 @@ try {
     Stop-Process -Id $app.Id -Force -ErrorAction SilentlyContinue
 }
 $lines = Get-ChildItem $log -Filter *.jsonl | Get-Content
-$them = ($lines | Where-Object { $_ -match '"who":"THEM"' }) -join ' '
-"THEM heard: $them"
-if ($them -notmatch 'elephant') { throw 'The named app was not transcribed as THEM' }
-if ($them -match 'giraffe') { throw 'The decoy app leaked into THEM: --hear is not isolating' }
+$far = ($lines | Where-Object { $_ -notmatch '"who":"YOU"' }) -join ' '
+"far end heard: $far"
+if ($far -notmatch 'elephant') { throw 'The named app was not transcribed as the far end' }
+if ($far -match 'giraffe') { throw 'The decoy app leaked into the far end: --hear is not isolating' }
 'PASS: --hear pwsh heard the elephant and not the giraffe'
