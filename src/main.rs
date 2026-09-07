@@ -184,6 +184,11 @@ struct Args {
     #[arg(long, env = "IV_MIN_WORDS", default_value_t = 3)]
     min_words: usize,
 
+    /// Wait this long (ms) for the far end to stop before asking for advice;
+    /// 0 asks on every finished turn
+    #[arg(long, env = "IV_SETTLE", default_value_t = 800)]
+    settle: u64,
+
     /// Panel opacity, 0-255
     #[arg(long, env = "IV_ALPHA", default_value_t = 240)]
     alpha: u8,
@@ -325,6 +330,8 @@ struct ContextServices {
     /// Shared with the THEM whisper worker, which owns the embeddings while
     /// this thread owns the names. See `people`.
     book: Arc<Mutex<people::Book>>,
+    /// How long the far end must be quiet before a turn is worth paying for.
+    settle: std::time::Duration,
 }
 
 /// Before anything goes to the coach: if the folder changed, the coach and
@@ -388,6 +395,7 @@ fn route(
         persona,
         tune,
         book,
+        settle,
     } = services;
     let mut history = history::History::default();
     // Seeded, not empty: everyone ever named is already a cluster in the book,
@@ -414,8 +422,56 @@ fn route(
     let mut coaching = !manual;
     let _ = tx.send(Msg::Coaching(coaching));
     let mut paused = false;
+    // A far-end turn that has earned a request but has not been paid for yet.
+    //
+    // The VAD ends a turn after 500 ms of quiet (`HANG_MS`), which is far
+    // shorter than the pause between two sentences of the same thought. One
+    // spoken question therefore arrives as a handful of separate turns, and
+    // asking on each of them bought a full request per fragment: measured on a
+    // real 45-second interview question, eight requests where one was wanted,
+    // and seven of those answers thrown away the moment the next fragment
+    // landed. `Coach::ask`'s `bounded(1)` only collapses fragments that arrive
+    // while a request is still in flight; anything slower than the round-trip
+    // slips through as a fresh request.
+    //
+    // Worse than the count: `body()` puts `cache_control` on the system block
+    // only, so `messages` is never cached — each of those eight re-billed the
+    // whole 24-turn window and every reference excerpt with it.
+    //
+    // The cost is honest and it is latency: advice on the turn that matters
+    // arrives `settle` later. That is the right trade because advice about a
+    // fragment of a question still being asked has no use — the user cannot
+    // answer yet — while advice after the question has actually finished is
+    // the whole point. `--settle 0` restores asking on every finished turn.
+    let mut owed: Option<String> = None;
 
-    while let Ok(mut m) = rx.recv() {
+    loop {
+        let mut m = match owed {
+            // Nothing owed: block, and cost nothing while the room is quiet.
+            None => match rx.recv() {
+                Ok(m) => m,
+                Err(_) => return,
+            },
+            Some(_) => match rx.recv_timeout(settle) {
+                Ok(m) => m,
+                Err(crossbeam_channel::RecvTimeoutError::Disconnected) => return,
+                // The far end has stopped. Build the request now rather than
+                // when the turn landed, so it carries every fragment that
+                // arrived while we waited — and so the seven prompts we would
+                // have assembled and thrown away are never assembled.
+                Err(crossbeam_channel::RecvTimeoutError::Timeout) => {
+                    if let (Some(coach), Some(text)) = (&coach, owed.take()) {
+                        coach.ask(format!(
+                            "{}{}{}",
+                            situation(&tune, history.user_spoke()),
+                            history.render(),
+                            references.retrieve(&text)
+                        ));
+                    }
+                    continue;
+                }
+            },
+        };
         match &m {
             Msg::Coaching(on) => {
                 coaching = *on;
@@ -585,17 +641,15 @@ fn route(
                 text: text.clone(),
             });
             refresh_corpus(&mut corpus, &mut roster, &persona, &coach, &tune, &tx);
-            if let Some(coach) = &coach
+            if coach.is_some()
                 && coaching
                 && who.is_them()
                 && text.split_whitespace().count() >= min_words
             {
-                coach.ask(format!(
-                    "{}{}{}",
-                    situation(&tune, history.user_spoke()),
-                    history.render(),
-                    references.retrieve(text)
-                ));
+                // Not `coach.ask` — the far end may still be mid-thought, and
+                // the timeout arm above is where a settled one gets paid for.
+                // A later fragment simply replaces this and restarts the clock.
+                owed = Some(text.clone());
             }
         }
         if tx.send(m).is_err() {
@@ -1080,6 +1134,7 @@ fn main() -> Result<()> {
                     persona,
                     tune,
                     book,
+                    settle: std::time::Duration::from_millis(args.settle),
                 },
             )
         });
@@ -1176,6 +1231,110 @@ fn main() -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+
+    /// Drive the real `route` on a thread and watch what reaches the panel.
+    ///
+    /// The provider refuses the connection at once (port 1), so no network is
+    /// touched and the worker's fate is deterministic — but `Coach::ask` still
+    /// announces `AdviceStart` before the request goes out, which is exactly
+    /// the signal that says "a paid request was spent". Counting those is how
+    /// a test can measure cost without spending any.
+    fn spawn_route(settle_ms: u64) -> (Sender<Msg>, Receiver<Msg>) {
+        let (turn_tx, turn_rx) = crossbeam_channel::unbounded();
+        let (ui_tx, ui_rx) = crossbeam_channel::unbounded();
+        let coach = coach::Coach::new(
+            provider::Provider {
+                url: "http://127.0.0.1:1",
+                model: "test".into(),
+                key: "test".into(),
+                wire: provider::Wire::OpenAi,
+            },
+            String::new(),
+            turn_tx.clone(),
+        );
+        let dir = std::env::temp_dir().join(format!("iv_route_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let corpus = knowledge::Corpus::load(&dir).unwrap();
+        let references = references::References::new(ui_tx.clone(), None);
+        let tune = hearing_tune(&["zoom"]);
+        let book = Arc::new(Mutex::new(people::Book::load(None)));
+        std::thread::spawn(move || {
+            route(
+                turn_rx,
+                ui_tx,
+                Some(coach),
+                3,
+                false,
+                None,
+                roster::Roster::load(std::path::Path::new("no-such-folder")),
+                ContextServices {
+                    agent: None,
+                    references,
+                    research_prompt: String::new(),
+                    corpus,
+                    persona: String::new(),
+                    tune,
+                    book,
+                    settle: std::time::Duration::from_millis(settle_ms),
+                },
+            )
+        });
+        (turn_tx, ui_rx)
+    }
+
+    fn them(text: &str) -> Msg {
+        Msg::Turn(
+            Who::Them {
+                voice: Some(0),
+                name: None,
+            },
+            text.to_string(),
+        )
+    }
+
+    fn requests(ui: &Receiver<Msg>) -> usize {
+        ui.try_iter()
+            .filter(|m| matches!(m, Msg::AdviceStart(_)))
+            .count()
+    }
+
+    /// **The reason `settle` exists.** One spoken question arrives as many
+    /// turns, because the VAD ends a turn after 500 ms of quiet and the pause
+    /// between two sentences of the same thought is longer than that. Asking on
+    /// each fragment bought a request per fragment — measured at eight on a real
+    /// 45-second interview question, seven of whose answers were discarded the
+    /// moment the next fragment landed.
+    #[test]
+    fn one_question_in_several_breaths_costs_one_request() {
+        let (turns, ui) = spawn_route(1000);
+        for fragment in [
+            "Let's start quick.",
+            "You inherit a hundred and thirty two engineers.",
+            "Two of those leaders are excellent.",
+            "What do you do with that leader?",
+        ] {
+            turns.send(them(fragment)).unwrap();
+        }
+        std::thread::sleep(std::time::Duration::from_millis(1800));
+        assert_eq!(
+            requests(&ui),
+            1,
+            "four fragments of one question must cost one request"
+        );
+    }
+
+    /// The mirror image, or the test above would pass just as well against a
+    /// coach that never asks at all: two turns genuinely far apart are two
+    /// separate things to advise on, and must still cost two requests.
+    #[test]
+    fn two_turns_far_apart_are_still_two_requests() {
+        let (turns, ui) = spawn_route(100);
+        turns.send(them("we can ship on the eleventh")).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(400));
+        turns.send(them("what about the read replicas")).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(400));
+        assert_eq!(requests(&ui), 2, "a settled turn each side of a real pause");
+    }
 
     fn hearing_tune(apps: &[&str]) -> Arc<audio::Tune> {
         Arc::new(audio::Tune {
