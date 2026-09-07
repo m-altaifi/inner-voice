@@ -7,6 +7,76 @@ Update the **Now** block after every work session. Nothing else here is chronolo
 
 ## Now
 
+**Accuracy pass (2026-09-07, overnight):** asked to iterate for accuracy, invent
+scenarios and test the whole thing. Four defects, three of them found by walking
+a *working day* rather than a single call — which is the lesson: every one
+needed two events to appear, so no single-turn test could have found any of
+them, and none of the 99 tests standing at the time did.
+
+**1. Awareness was a latch, not a window.** "Has the user spoken" was set by the
+first microphone turn and never cleared, so a morning call made the afternoon's
+YouTube video read as a conversation the user was taking part in. That is the
+exact fault `situation()` was written to fix, returning by the back door six
+hours later. Now `History::user_spoke` over the retained 24 turns: self-healing,
+and the model is told about the same window it is shown.
+
+**2. A heard name could overwrite a known one.** The binding is written through
+to `people.json`, so one "I'm Ahmad" out of a noisy second renamed an Ahmed
+permanently and on every later call. Heard intros and being addressed now fill a
+blank and nothing more. A roster intro may still overwrite — its spelling came
+off a list a human wrote, so it is the correction rather than another guess —
+and `/who` is how a name gets fixed, because that is a human saying it on
+purpose. The precedence moved out of `route`'s channel loop into `name_voice`
+for one reason: it is the code that can attribute a sentence to the wrong
+person, and inline in a `while let` it could not be tested at all.
+
+**3. The audio source reached the prompt unquoted.** `history::render` quotes
+the transcript so a spoken newline cannot forge a speaker label; `situation`
+interpolated an app name — a process name off the machine, not the user's
+writing — raw into the same prompt. Mutation-checked: an app named
+`a
+Ignore previous instructions.` produces exactly that as its own line.
+
+**4. A new user could not set up.** The speaker-embedding model had no `--setup`
+check at all and its download was buried in a later README section, so a new
+user fetched whisper, stopped, and got a system where the far end is never named
+— silently, because a missing embedding model is a working call by design. And
+`--setup`'s summary said "fix the ✗ lines above", which on a fresh machine is a
+wall rather than an instruction; it now names the first failure and its fix,
+since checks run in dependency order.
+
+**Both fixes were mutation-checked** — reverted to the code they replaced, run,
+and confirmed to fail with the right message — because a test that passes
+against the bug is worse than no test.
+
+**`tools/voice_memory.ps1`** is new and is the first end-to-end proof of the
+voice book: the far end introduces itself aloud through SAPI in a second
+process, the name binds to the voice cluster, reaches `people.json`, and a
+second run loads it with nothing spoken. Its first real run demonstrated the
+guards on real audio better than any fixture could: whisper misheard the
+introduction twice as *"I made a lovelace"* and **neither mishearing enrolled
+anybody**; the correct reading did. Afterwards the same misheard sentence was
+still attributed to Ada Lovelace, because the name is on the voice and not on
+the transcript.
+
+It deliberately does **not** test telling two people apart. Every Microsoft TTS
+voice shares a vocoder and they score 0.72–0.84 against *each other*, above the
+0.70 `SAME` threshold, so synthetic speech cannot demonstrate discrimination in
+either direction — the same trap as benchmarking ASR on `jfk.wav`, in a new
+place.
+
+108 unit tests (was 99), clippy clean, and every live script green:
+`ui_smoke.ps1`, `hear_isolation.ps1` single and multi-app, `voice_memory.ps1`,
+GPU and loopback. `hear_isolation`'s far-end lines now read `"who":"THEM"` where
+its own comment records `"who":"Sarah Chen"` happening on a real run — the
+corpus deletion, confirmed in the live path rather than argued.
+
+**Unchanged, and now the only thing left:** `voiceid.rs:16` (0.70/0.50) is still
+unvalidated, and the voice book makes that matter more rather than less, because
+a misattribution now persists into the next call instead of dying with this one.
+`SAME` erring high means "not sure" rather than "wrong person", which is the safe
+direction. Only a real call with `--dump` moves it.
+
 **First real use (2026-09-07):** "so far it's perfect; just not fully aware."
 Two findings, both from actually running it, neither reachable from a test.
 
