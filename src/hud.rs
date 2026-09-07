@@ -344,10 +344,15 @@ enum Tag {
 
 impl Tag {
     const TABLE: [(Tag, &'static str, &'static str); 4] = [
-        (Tag::Ask, "ASK", "ASK NEXT"),
-        (Tag::Say, "SAY", "SUGGESTED WORDING"),
+        // The headings name what the line *is*, never what to do with it.
+        // "ASK NEXT" and "CLARIFY" were instructions, and an instruction over a
+        // body that is already a question reads as an order twice over. The
+        // wire tags are unchanged: `prompt.md` still emits ASK/SAY/NOTE/FIX and
+        // only the words above them moved.
+        (Tag::Ask, "ASK", "QUESTION"),
+        (Tag::Say, "SAY", "WHAT TO SAY"),
         (Tag::Note, "NOTE", "KEEP IN MIND"),
-        (Tag::Fix, "FIX", "CLARIFY"),
+        (Tag::Fix, "FIX", "SAY INSTEAD"),
     ];
     fn heading(self) -> &'static str {
         Self::TABLE
@@ -1422,8 +1427,12 @@ mod tests {
         // Only the exact tag followed by whitespace becomes a heading.
         assert_eq!(shown[1], (None, "ASKING is not a tag".into()));
         assert_eq!(shown[2], (Some(Tag::Note), "Owner unclear".into()));
-        assert_eq!(Tag::Ask.heading(), "ASK NEXT");
-        assert_eq!(Tag::Fix.heading(), "CLARIFY");
+        // Headings name the line, they do not command the reader: this panel
+        // is read mid-sentence and an order costs a translation step the user
+        // does not have time for.
+        assert_eq!(Tag::Ask.heading(), "QUESTION");
+        assert_eq!(Tag::Say.heading(), "WHAT TO SAY");
+        assert_eq!(Tag::Fix.heading(), "SAY INSTEAD");
     }
     #[test]
     fn only_ask_and_fix_are_saturated() {
