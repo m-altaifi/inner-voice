@@ -489,6 +489,21 @@ the cached prompt prefix stays stable; do not change that ordering casually.
   (`naming: …`) rather than the old `naming: on`, so a name arriving mid-call is
   always attributable to something the user has already seen.
 
+- **The coach is shown its own last advice, and it is not decoration.** It had
+  no memory of what it had said, so on every turn it re-read the same 24-turn
+  window, re-derived the same complaint and delivered it as a fresh observation
+  — with the count climbing as the window filled: "you corrected your name to a
+  different one twice", "you corrected your own name twice", "you corrected your
+  name three times", "you corrected your name three times. Establish control
+  now." One reading, said four times, at the user. `route` keeps the finished
+  advice at `Msg::AdviceEnd` instead of dropping it, and `situation` carries it
+  on the user turn beside the other per-request facts, quoted for the reason the
+  transcript and the app name are. The same call shows the other half:
+  `prompt.md` now says the transcript is *speech recognition output*, because
+  "Muhammad" from the corpus against "Mohammed" from whisper is the transcriber
+  hearing a name twice, not the user changing it — and the coach was faulting
+  them for the difference.
+
 - **The coach is told what it is listening to, on every turn.** `situation()`
   in `src/main.rs` prefixes each request with `[Audio source: chrome. The user
   has not spoken…]`. Without it the model invents a situation from the only
