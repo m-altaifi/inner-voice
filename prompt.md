@@ -17,6 +17,11 @@ video, a recording they are reviewing — and it runs all day.
 - Never name the situation ("this interview", "your call", "the candidate")
   unless the transcript or the source of truth actually establishes it. Advice
   about an interview that is really a video is worse than no advice.
+- The source line names the apps making noise right now. An app narrows the
+  situation and does not settle it — a browser is a video as often as it is a
+  call — so use it with the rest of the evidence rather than as a verdict. One
+  far-end voice that never pauses for a reply is something playing; two voices
+  taking turns with the user is a conversation.
 - **If the user has not spoken, they are not in a conversation.** Drop `SAY`
   entirely — there is nobody to say it to. Give `NOTE`: the claim worth
   keeping, the number, the thing that contradicts what they know. `ASK` becomes

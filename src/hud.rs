@@ -758,7 +758,7 @@ impl State {
         let mut rows: Vec<(String, bool)> = crate::audio::playing(&self.session.loopback)
             .unwrap_or_default()
             .into_iter()
-            .map(|name| (name, true))
+            .map(|a| (a.name, true))
             .collect();
         // A selected app that is not playing still belongs on the list, or
         // turning it back off would mean typing a command to undo a click.

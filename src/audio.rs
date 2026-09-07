@@ -291,14 +291,18 @@ impl Tune {
 /// Takes the device *name* and opens it here because COM interfaces are not
 /// `Send`: the panel runs on the main thread (already MTA, `main` put it there
 /// to enumerate devices) and so must resolve its own.
-pub fn playing(device: &str) -> Result<Vec<String>> {
+/// Returns the whole `AppSession`, not just the name: the pane wants every
+/// app that *could* be selected, and the coach wants only the ones making noise
+/// right now. One enumeration, two questions — measured at 1.1 ms, so the
+/// router thread can afford to ask it per request.
+pub fn playing(device: &str) -> Result<Vec<AppSession>> {
     let dev = DeviceEnumerator::new()?
         .get_device_collection(&Direction::Render)?
         .get_device_with_name(device)?;
     let mut apps = sessions(&dev)?;
     // Active first: the one making noise now is the one being looked for.
     apps.sort_by_key(|a| !a.active);
-    Ok(apps.into_iter().map(|a| a.name).collect())
+    Ok(apps)
 }
 
 /// `--hear`/`/hear` take a comma list, because WASAPI's activation params name
