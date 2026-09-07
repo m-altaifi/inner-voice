@@ -251,7 +251,15 @@ fn name_at(words: &[&str], low: &[String], at: usize) -> Option<String> {
         (capitalised && plausible).then_some(word)
     };
     let first = one(at)?;
-    Some(match one(at + 1) {
+    // "I'm Priya, Marcus asked me to join" is one person's name followed by a
+    // different person's, not a two-word name -- and it named the speaker
+    // "Priya Marcus". `bare` strips the comma before `one` ever sees it, so the
+    // boundary can only be read off the raw word. Any clause-closing mark ends
+    // the name: a surname never follows one.
+    let closed = words
+        .get(at)
+        .is_some_and(|w| w.trim().ends_with([',', '.', ';', ':', '!', '?']));
+    Some(match (!closed).then(|| one(at + 1)).flatten() {
         Some(second) => format!("{first} {second}"),
         None => first.to_string(),
     })
@@ -364,6 +372,17 @@ mod tests {
             assert_eq!(introduced("I'm Ada and Grace is on mute").as_deref(), Some("Ada"));
             assert_eq!(introduced("I'm Ada, the platform lead").as_deref(), Some("Ada"));
             assert_eq!(introduced("I'm Anne-Marie").as_deref(), Some("Anne-Marie"));
+            // A comma ends the name. "I'm Ada, the platform lead" above only
+            // passed because "the" is in NOT_A_NAME -- a *capitalised* word
+            // after the comma was never tried, and ran straight on into the
+            // name, enrolling one person under two people's names.
+            assert_eq!(
+                introduced("Actually, I'm Priya, Marcus asked me to join").as_deref(),
+                Some("Priya")
+            );
+            assert_eq!(introduced("I'm Drew, Sarah's colleague").as_deref(), Some("Drew"));
+            // Still one name when nothing separates the two words.
+            assert_eq!(introduced("I'm Ada Lovelace").as_deref(), Some("Ada Lovelace"));
         }
 
         /// The cue has to be a word. "Trim" ends in "im" and "him is" contains

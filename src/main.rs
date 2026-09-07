@@ -408,6 +408,9 @@ fn route(
         .unwrap_or_default();
     // A name spoken in the previous turn, waiting to see who answers to it.
     let mut called: Option<String> = None;
+    // Voices whose name came only from being addressed — the weakest of the
+    // three tiers, and the only one a later self-introduction may overrule.
+    let mut guessed: std::collections::HashSet<usize> = std::collections::HashSet::new();
     let mut last_them = String::new();
     // Which far-end voice spoke last, so `/who` has something to attach to.
     let mut last_voice: Option<usize> = None;
@@ -623,7 +626,7 @@ fn route(
                 && let Some(v) = *voice
             {
                 last_voice = Some(v);
-                name_voice(&mut names, &roster, v, text, called.as_deref());
+                name_voice(&mut names, &mut guessed, &roster, v, text, called.as_deref());
                 remember(&book, &tx, &names, v);
                 *name = names.get(&v).cloned();
             }
@@ -675,6 +678,7 @@ fn route(
 /// could not be tested at all.
 fn name_voice(
     names: &mut HashMap<usize, String>,
+    guessed: &mut std::collections::HashSet<usize>,
     roster: &roster::Roster,
     voice: usize,
     text: &str,
@@ -682,12 +686,25 @@ fn name_voice(
 ) {
     if let Some(n) = roster.self_intro(text) {
         bind(names, voice, n);
-    } else if !names.contains_key(&voice) {
-        if let Some(n) = roster::introduced(text) {
+        guessed.remove(&voice);
+    } else if let Some(n) = roster::introduced(text) {
+        // A heard self-introduction outranks a guess, and used to lose to one.
+        // The three tiers are documented as falling evidence, but the code only
+        // knew "named" from "blank" — so the *weakest* tier, being addressed,
+        // permanently blocked the stronger one. "Marcus, can you confirm?"
+        // named whoever spoke next, and when that person then said "Actually,
+        // I'm Priya", the correction was discarded and they stayed Marcus for
+        // the rest of the call. `guessed` is the missing distinction, and it
+        // holds only the tier that is allowed to be overruled.
+        if !names.contains_key(&voice) || guessed.contains(&voice) {
             bind(names, voice, &n);
-        } else if let Some(n) = called {
-            bind(names, voice, n);
+            guessed.remove(&voice);
         }
+    } else if !names.contains_key(&voice)
+        && let Some(n) = called
+    {
+        bind(names, voice, n);
+        guessed.insert(voice);
     }
 }
 
@@ -1409,6 +1426,7 @@ mod tests {
     /// appear, and no single-call test could have shown either.
     mod scenarios {
         use super::super::*;
+        use std::collections::HashSet;
         // `hearing_tune` builds a `Tune` with a fixed selection; it lives in the
         // parent test module beside the `/hear` tests that first needed it.
         use super::hearing_tune;
@@ -1441,7 +1459,7 @@ mod tests {
             voice: usize,
             said: &str,
         ) {
-            name_voice(names, r, voice, said, None);
+            name_voice(names, &mut HashSet::new(), r, voice, said, None);
         }
 
         /// A stranger with no roster at all — the ordinary case now that
@@ -1484,11 +1502,25 @@ mod tests {
         fn being_addressed_fills_a_blank_but_never_overrules_an_introduction() {
             let r = roster(&["Sara Osman"]);
             let mut names = HashMap::new();
-            name_voice(&mut names, &r, 0, "yes exactly", Some("Sara Osman"));
+            name_voice(
+                &mut names,
+                &mut HashSet::new(),
+                &r,
+                0,
+                "yes exactly",
+                Some("Sara Osman"),
+            );
             assert_eq!(names.get(&0).map(String::as_str), Some("Sara Osman"));
 
             let mut named = HashMap::from([(0, "Ahmed".to_string())]);
-            name_voice(&mut named, &r, 0, "yes exactly", Some("Sara Osman"));
+            name_voice(
+                &mut named,
+                &mut HashSet::new(),
+                &r,
+                0,
+                "yes exactly",
+                Some("Sara Osman"),
+            );
             assert_eq!(named.get(&0).map(String::as_str), Some("Ahmed"));
         }
 
@@ -1612,6 +1644,67 @@ mod tests {
             assert!(lines[2].starts_with("Ada Lovelace: \""), "{request}");
             assert!(lines[3].starts_with("YOU: \""), "{request}");
             assert!(lines[4].starts_with("Ada Lovelace: \""), "{request}");
+        }
+
+        /// **Being addressed is the weakest evidence, and it used to be
+        /// permanent.** `called` attaches a name to whoever speaks next, which
+        /// on a shared line is often not the person addressed at all — and once
+        /// it had, a later unambiguous self-introduction was discarded, because
+        /// the code only knew "named" from "blank" and not which tier had
+        /// filled it. CLAUDE.md documents the three tiers as *falling*
+        /// evidence; this is the code finally agreeing with it.
+        #[test]
+        fn a_self_introduction_overrules_a_name_that_was_only_guessed() {
+            let r = roster(&["Marcus Webb"]);
+            let mut names = HashMap::new();
+            let mut guessed = HashSet::new();
+
+            // "Marcus, can you confirm?" — said by the user, so the next
+            // far-end voice to speak inherits the name. It is not Marcus.
+            name_voice(
+                &mut names,
+                &mut guessed,
+                &r,
+                2,
+                "sure, I can look into that",
+                Some("Marcus Webb"),
+            );
+            assert_eq!(names.get(&2).map(String::as_str), Some("Marcus Webb"));
+
+            // The same voice now says who they actually are.
+            name_voice(
+                &mut names,
+                &mut guessed,
+                &r,
+                2,
+                "Actually, I'm Priya, Marcus asked me to join",
+                None,
+            );
+            assert_eq!(
+                names.get(&2).map(String::as_str),
+                Some("Priya"),
+                "a stranger correcting a guess was ignored for the whole call"
+            );
+        }
+
+        /// The other direction, which is the one that must not regress: a name
+        /// the speaker gave for *themselves* is not a guess, so a later heard
+        /// introduction must not overwrite it. Only `/who` corrects that, and
+        /// only because a human said it on purpose.
+        #[test]
+        fn a_heard_name_still_cannot_overwrite_another_heard_name() {
+            let mut names = HashMap::new();
+            let mut guessed = HashSet::new();
+            name_voice(&mut names, &mut guessed, &empty(), 0, "Hi, I'm Ahmed", None);
+            name_voice(
+                &mut names,
+                &mut guessed,
+                &empty(),
+                0,
+                "I'm Ahmad and I think that is fine",
+                None,
+            );
+            assert_eq!(names.get(&0).map(String::as_str), Some("Ahmed"));
         }
 
         /// A whole day in one test: a call in the morning, a video in the

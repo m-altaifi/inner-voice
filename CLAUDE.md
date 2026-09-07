@@ -150,6 +150,16 @@ and cue the only evidence there is), `Roster::addressed` (fills a blank only).
 `/who <name>` is the manual path and the one that matters most in practice —
 plenty of calls never say a name aloud at all.
 
+The three tiers are *falling* evidence, and the code has to know which one
+filled a slot, not merely that it is filled. It did not: `addressed` attaches a
+name to whoever speaks next, which on a shared line is often not the person
+addressed — and once it had, a later unambiguous self-introduction was
+discarded. "Marcus, can you confirm?" named a stranger, and "Actually, I'm
+Priya" could not take it back for the rest of the call. `guessed` in `route`
+holds exactly the voices named by the weakest tier, and is the only thing
+`roster::introduced` is allowed to overrule. A name heard for oneself still
+cannot overwrite another heard name; only `/who` does that.
+
 **`roster::introduced` is the one place this program accepts a name nobody
 wrote down, and it is deliberately the narrowest.** Self-introduction only,
 never being addressed: "Ahmed, can you take this?" is far more common than
