@@ -14,10 +14,20 @@ fn loopback_delivers_16k_mono() {
     initialize_mta().ok().expect("COM init");
 
     // A Render device opened for Capture is what makes this loopback.
-    let dev = DeviceEnumerator::new()
-        .expect("enumerator")
-        .get_default_device(&Direction::Render)
-        .expect("default speakers");
+    //
+    // No render endpoint at all is not evidence about the format assumption --
+    // a VM, a CI runner or an RDP session without audio redirection simply has
+    // nowhere to look. This used to `.expect()` and turn every such machine's
+    // `cargo test` red for a reason that had nothing to do with the code, so it
+    // skips the way `gpu_transcribes` skips its missing model. A device that
+    // *is* there and refuses 16 kHz mono still fails: that is the assumption.
+    let dev = match DeviceEnumerator::new().and_then(|e| e.get_default_device(&Direction::Render)) {
+        Ok(dev) => dev,
+        Err(e) => {
+            eprintln!("skipping: no default render endpoint ({e})");
+            return;
+        }
+    };
     println!("loopback source: {}", dev.get_friendlyname().unwrap());
 
     let mut client = dev.get_iaudioclient().expect("audio client");

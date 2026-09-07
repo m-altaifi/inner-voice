@@ -20,7 +20,11 @@ after the script name is forwarded to cargo.
 - `tests/gpu_transcribes.rs` skips itself unless `models/ggml-large-v3-turbo-q5_0.bin`
   exists (see README for the download). It is the only evidence the unsupported-compiler
   override did not corrupt runtime — re-run it after any toolchain change.
-- `tests/wasapi_loopback.rs` needs real audio hardware; 0 captured bytes is a pass.
+- `tests/wasapi_loopback.rs` needs real audio hardware; 0 captured bytes is a
+  pass, and *no render endpoint at all* skips rather than failing — a VM or a
+  runner without audio has nothing to say about the format assumption. A
+  device that is present and refuses 16 kHz mono still fails; that is the
+  assumption being guarded.
 - `tools/hear_isolation.ps1` and `tools/voice_memory.ps1` are the only tests that
   exercise WASAPI → VAD → whisper → `route` → disk. Both drive real audio through
   SAPI in a second process, so they need speakers and take about a minute.
