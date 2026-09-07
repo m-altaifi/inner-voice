@@ -21,6 +21,15 @@ after the script name is forwarded to cargo.
   exists (see README for the download). It is the only evidence the unsupported-compiler
   override did not corrupt runtime — re-run it after any toolchain change.
 - `tests/wasapi_loopback.rs` needs real audio hardware; 0 captured bytes is a pass.
+- `tools/hear_isolation.ps1` and `tools/voice_memory.ps1` are the only tests that
+  exercise WASAPI → VAD → whisper → `route` → disk. Both drive real audio through
+  SAPI in a second process, so they need speakers and take about a minute.
+  `voice_memory.ps1` proves the claim `people.rs` exists for: a name heard aloud
+  in one session is reloaded by the next. It deliberately does **not** test
+  telling two people apart — every Microsoft TTS voice shares a vocoder and they
+  score 0.72–0.84 against *each other*, above the 0.70 `SAME` threshold, so
+  synthetic speech cannot demonstrate speaker discrimination in either
+  direction. That still needs a real call with `--dump`.
 - The live provider test in `src/coach.rs` costs money and is opt-in:
   `$env:IV_LIVE_TEST=1; .\build.ps1 test --release live_provider`.
 - `CMAKE_CUDA_ARCHITECTURES` in `build.ps1` is hardcoded to `86` (RTX 3080 Ti).

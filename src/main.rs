@@ -1351,6 +1351,37 @@ mod tests {
             assert!(names.is_empty(), "{names:?}");
         }
 
+        /// A roster deliberately refuses to guess between two people who share
+        /// a first name — "I'm Ahmed" with two Ahmeds listed is a coin flip, so
+        /// `self_intro` returns nothing. The free path then names the voice
+        /// "Ahmed" anyway, and that is the intended answer rather than a hole:
+        /// whoever spoke *is* called Ahmed, the label claims nothing about
+        /// which one, and `prompt.md`'s rule is against a wrong name, not an
+        /// incomplete one. If both Ahmeds later claim it, `bind` clears both.
+        #[test]
+        fn a_shared_first_name_is_still_a_name_even_when_the_roster_abstains() {
+            let r = roster(&["Ahmed Bennani", "Ahmed Toure"]);
+            assert_eq!(r.self_intro("I'm Ahmed"), None, "the roster must abstain");
+
+            let mut names = HashMap::new();
+            turn(&mut names, &r, 0, "I'm Ahmed, I run platform");
+            assert_eq!(names.get(&0).map(String::as_str), Some("Ahmed"));
+
+            // The surname settles it, and the roster's spelling wins outright —
+            // this is the one case allowed to overwrite.
+            turn(&mut names, &r, 0, "I'm Ahmed Toure by the way");
+            assert_eq!(names.get(&0).map(String::as_str), Some("Ahmed Toure"));
+        }
+
+        /// Someone not on the list, on a call that also has a roster. The
+        /// roster must not swallow them and they must not be left anonymous.
+        #[test]
+        fn a_stranger_on_a_briefed_call_is_still_named() {
+            let mut names = HashMap::new();
+            turn(&mut names, &roster(&["Sara Osman"]), 0, "hi, I'm Ahmed");
+            assert_eq!(names.get(&0).map(String::as_str), Some("Ahmed"));
+        }
+
         /// Ordinary speech must not enrol people. Every line here is one a real
         /// meeting contains.
         #[test]
