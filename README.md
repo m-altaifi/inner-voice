@@ -12,9 +12,18 @@ you want it (`--manual`, then Ctrl+Shift+F3).
 
 ## Setup
 
-Requires Windows x64, an NVIDIA GPU/driver, CUDA, Rust, and Visual Studio C++
-build tools with CMake and Ninja. The panel is egui on OpenGL and shares the GPU
-with transcription; both run together on one card.
+Requires Windows x64, an NVIDIA GPU/driver, CUDA, Rust 1.95 or newer, and
+Visual Studio C++ build tools with CMake and Ninja. The panel is egui on OpenGL
+and shares the GPU with transcription; both run together on one card.
+
+**Build with `--release`. Debug builds do not link** (LNK2038): the prebuilt
+ONNX Runtime is `/MD` and `knf-rs-sys` compiles `/MDd`, so the two disagree on
+the CRT. `build.ps1` forwards whatever you pass it and does not add the flag
+for you.
+
+The build also downloads its own ONNX Runtime from pyke's CDN, so it needs
+network access beyond crates.io. A vendored or air-gapped build has to supply
+that separately.
 
 Copy and paste the whole block. It builds, fetches both models, and creates
 `.env`:
@@ -448,6 +457,8 @@ consent as required.
 powershell -NoProfile -ExecutionPolicy Bypass -File .\build.ps1 test --release
 powershell -NoProfile -ExecutionPolicy Bypass -File .\build.ps1 fmt -- --check
 ```
+
+`--release` is not optional here either, for the linker reason above.
 
 Tests cover VAD, roster/voice matching, Unicode knowledge, typed history, logging,
 SSE errors, child deadlines, research parsing, GPU transcription, and WASAPI.
