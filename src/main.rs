@@ -868,6 +868,12 @@ fn record(log: &Option<log::Log>, tx: &Sender<Msg>, who: &str, text: &str) {
 /// Failure is silence on purpose: a missing device costs the coach one fact,
 /// and must not cost the turn.
 fn audible(loopback: &str) -> Vec<String> {
+    // No device configured cannot match one, and the lookup would still walk
+    // the whole render collection before saying so -- real COM work per
+    // request, for an answer known in advance.
+    if loopback.is_empty() {
+        return Vec::new();
+    }
     audio::playing(loopback)
         .map(|apps| {
             apps.into_iter()
@@ -1000,7 +1006,14 @@ fn main() -> Result<()> {
         let _ = tx.send(Msg::AdviceStart(1));
         let _ = tx.send(Msg::Advice(
             1,
-            "ASK What would make you delay the launch?\nNOTE The rollback owner is still unclear."
+            // All four tags, so the preview is the one place the panel's own
+            // headings can be read without a live call -- and every body is
+            // words the user could speak as they stand, which is the shape
+            // `prompt.md` now requires of ASK, SAY and FIX.
+            "ASK What would make you delay the launch?\n\
+             SAY I would rather commit once I have seen the migration plan.\n\
+             FIX I am not certain yet — give me until Thursday.\n\
+             NOTE The rollback owner is still unclear."
                 .into(),
         ));
         let _ = tx.send(Msg::AdviceEnd(1));
