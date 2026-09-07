@@ -7,6 +7,46 @@ Update the **Now** block after every work session. Nothing else here is chronolo
 
 ## Now
 
+**First real use (2026-09-07):** "so far it's perfect; just not fully aware."
+Two findings, both from actually running it, neither reachable from a test.
+
+**1. It invented the situation.** A YouTube video produced advice about "the
+interview". Root cause was not the model: `prompt.md` opened with "You are the
+user's inner voice during a live call" and carried a rule about interviews, and
+nothing in the request ever said what was being listened to. So the model filled
+the gap with the only shape it had been given. This program *knew* the answer —
+the `--hear` selection — and threw it away every turn.
+
+`situation()` now prefixes each coach request with the two facts available:
+which app is selected (through `describe`, lifted out of `set_hearing` so the
+notice line and the coach cannot disagree about what `THEM` is) and whether YOU
+has ever spoken. The second is the stronger signal and costs one bool: a video
+has speakers and no participants, and a user who never answers is not in a
+conversation. On the **user** turn, not the system prompt — the system prompt is
+behind the cache breakpoint and rebuilt only on corpus change, while `/hear` can
+change the answer mid-session, and a stale situation line is worse than none.
+`prompt.md` stops asserting a call, is told not to name a situation the
+transcript has not established, and drops `SAY` when the user has not spoken.
+
+**2. Long turns ran off the right edge.** egui gives children of a horizontal
+layout unbounded width, and the conversation strip is `YOU` + body in a
+`horizontal_top`. The body moved into a `ui.vertical` child, which gets the
+width that is left.
+
+Worth recording how badly the *diagnosis* went, because the fix was right for
+ten minutes before I broke my own evidence. The preview seeds the screenshots,
+and every seeded line was short enough to fit one row — so no screenshot could
+ever have shown this, which is why it survived to a real session. Adding a long
+one, I wrote it with Rust `\` line continuations that got flattened into runs of
+literal spaces, read the resulting gaps as egui justifying the text, and wrote a
+comment recording that false finding. The clean string wraps correctly. The
+comment now says the true reason. **A screenshot is only evidence if the thing
+being photographed is the real case.**
+
+99 unit tests (+1), GPU, loopback and `ui_smoke.ps1` green, verified by eye
+against a captured frame rather than by assertion — wrapping is drawing, and
+`ui_smoke` deliberately mirrors state rather than render.
+
 **The voice book (2026-09-06):** "the ai should identify speakers and store the
 data. and they're different people everytime." The second half is the part that
 made the first half wrong: `attendees.csv` is a list somebody writes *before* a

@@ -413,6 +413,29 @@ the cached prompt prefix stays stable; do not change that ordering casually.
   (`naming: …`) rather than the old `naming: on`, so a name arriving mid-call is
   always attributable to something the user has already seen.
 
+- **The coach is told what it is listening to, on every turn.** `situation()`
+  in `src/main.rs` prefixes each request with `[Audio source: chrome. The user
+  has not spoken…]`. Without it the model invents a situation from the only
+  shape it knows — a YouTube video produced advice about "the interview",
+  because `prompt.md` mentioned interviews and nothing contradicted it. Two
+  facts go in, both of which this program had and discarded: which app `--hear`
+  selected (`describe`, shared with the `/hear` notice so the two cannot
+  disagree), and whether YOU has *ever* spoken, which is the difference between
+  a conversation and something playing. It rides on the **user** turn, not the
+  system prompt: the system prompt sits behind the cache breakpoint and is
+  rebuilt only when the corpus changes, while `/hear` can change the answer
+  mid-session — a stale situation line would be worse than none. `prompt.md`
+  correspondingly no longer asserts "a live call"; it is told not to name a
+  situation the transcript has not established, and to drop `SAY` entirely when
+  the user has not spoken, because there is nobody to say it to.
+
+- **Text in a horizontal layout does not wrap.** egui hands children of a
+  horizontal layout unbounded width, so the conversation strip's `YOU`/`THEM`
+  rows ran a long turn off the right-hand edge. The body label therefore lives
+  in a `ui.vertical` child, which gets the width that is left. `--preview` now
+  seeds one turn longer than the panel, because every seeded line used to fit
+  on a single row and so no screenshot could ever have caught this.
+
 ### The prompt is coupled to the HUD
 
 `prompt.md` emits lines tagged `ASK` / `SAY` / `NOTE` / `FIX`. `display_advice()`

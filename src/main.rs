@@ -403,6 +403,9 @@ fn route(
     let mut last_them = String::new();
     // Which far-end voice spoke last, so `/who` has something to attach to.
     let mut last_voice: Option<usize> = None;
+    // Whether the user has said anything at all. One microphone turn is the
+    // difference between a conversation and a video playing.
+    let mut spoken = false;
     let mut advice = (0, String::new());
     // Whether a far-end turn asks the coach on its own. Off is the all-day
     // shape: an assistant left running through a working day would otherwise
@@ -483,7 +486,8 @@ fn route(
                 refresh_corpus(&mut corpus, &mut roster, &persona, &coach, &tune, &tx);
                 if let Some(coach) = &coach {
                     coach.ask(format!(
-                        "{}\n\nUser question: {}{}",
+                        "{}{}\n\nUser question: {}{}",
+                        situation(&tune, spoken),
                         history.render(),
                         serde_json::json!(question),
                         references.retrieve(question)
@@ -589,6 +593,8 @@ fn route(
             called = roster.addressed(text).map(str::to_string);
             if who.is_them() {
                 last_them = text.clone();
+            } else {
+                spoken = true;
             }
 
             record(&log, &tx, who.label(), text);
@@ -602,7 +608,12 @@ fn route(
                 && who.is_them()
                 && text.split_whitespace().count() >= min_words
             {
-                coach.ask(format!("{}{}", history.render(), references.retrieve(text)));
+                coach.ask(format!(
+                    "{}{}{}",
+                    situation(&tune, spoken),
+                    history.render(),
+                    references.retrieve(text)
+                ));
             }
         }
         if tx.send(m).is_err() {
@@ -648,19 +659,51 @@ fn record(log: &Option<log::Log>, tx: &Sender<Msg>, who: &str, text: &str) {
     }
 }
 
+/// What `THEM` currently is, in words. Used by the notice line and by the
+/// coach, which is the point: the app being listened to is a fact this program
+/// has and used to throw away.
+fn describe(apps: &[String]) -> String {
+    if apps.is_empty() {
+        "the whole speaker mix".to_string()
+    } else {
+        apps.join(" + ")
+    }
+}
+
+/// What the coach is told before every transcript, and the fix for advice that
+/// invents a situation.
+///
+/// The panel listens to whatever the user picked — a call, a meeting, a YouTube
+/// video, a recording — and the model was told none of that, so it filled the
+/// gap: playing a video produced advice about "the interview". The source app
+/// is the one hard fact available, and `THEM` never having spoken to a user who
+/// never answers is the other. Both are cheap to state and neither can be
+/// inferred from a transcript of one side talking.
+///
+/// It rides on the *user* turn rather than the system prompt on purpose. The
+/// system prompt sits behind the cache breakpoint and is rebuilt only when the
+/// corpus changes; `/hear` can change the answer mid-session, and a stale
+/// situation line would be worse than none.
+fn situation(tune: &audio::Tune, spoken: bool) -> String {
+    let apps = tune.hearing();
+    format!(
+        "[Audio source: {}. {}]\n\n",
+        describe(&apps),
+        match spoken {
+            true => "The user is taking part in this conversation.",
+            false => "The user has not spoken. They may be listening to something \
+                      rather than talking to anyone — do not assume a conversation \
+                      they are in.",
+        }
+    )
+}
+
 /// `/hear` — report, or rewrite, which apps are `THEM`.
 ///
 /// Bare `/hear` reports rather than clears: clearing is the destructive read,
 /// and a user checking what is selected should not have to risk it. `off`,
 /// `mix` and `all` are the ways back to the whole speaker mix.
 fn set_hearing(tune: &Arc<audio::Tune>, tx: &Sender<Msg>, spec: &str) {
-    fn describe(apps: &[String]) -> String {
-        if apps.is_empty() {
-            "the whole speaker mix".to_string()
-        } else {
-            apps.join(" + ")
-        }
-    }
     if spec.is_empty() {
         let apps = tune.hear.read().unwrap_or_else(|e| e.into_inner());
         let _ = tx.send(Msg::Sys(format!(
@@ -725,6 +768,15 @@ fn main() -> Result<()> {
                 name: None,
             },
             "We expect to launch next week.".into(),
+        ));
+        // Long on purpose. The preview is what `ui_smoke.ps1` photographs, and
+        // every seeded line used to be short enough to fit on one row -- so the
+        // conversation pane's labels sat in a horizontal layout with unbounded
+        // width, ran off the right edge, and no screenshot ever showed it.
+        let _ = tx.send(Msg::Turn(
+            Who::You,
+            "That is a long sentence on purpose, because a turn that runs past the width of the panel is the case that has to wrap under itself rather than disappear off the right-hand edge where nobody can read the end of it."
+                .into(),
         ));
         let local_references = references.clone();
         std::thread::spawn(move || {
@@ -1169,6 +1221,34 @@ mod tests {
         let mut names = HashMap::from([(1, "Sarah".into()), (2, "Marcus".into())]);
         bind(&mut names, 2, "Sarah");
         assert!(names.is_empty());
+    }
+
+    /// Playing a YouTube video produced advice about "the interview": the
+    /// model was told nothing about what it was listening to, so it invented a
+    /// situation. These two facts are the ones this program has and used to
+    /// discard.
+    #[test]
+    fn the_coach_is_told_what_it_is_listening_to() {
+        let tune = hearing_tune(&["chrome"]);
+        let watching = situation(&tune, false);
+        assert!(watching.contains("chrome"), "{watching}");
+        assert!(
+            watching.contains("has not spoken"),
+            "a user who never speaks is not in a conversation: {watching}"
+        );
+
+        // One microphone turn is the whole difference.
+        let talking = situation(&tune, true);
+        assert!(talking.contains("taking part"), "{talking}");
+
+        // No selection is still a fact worth stating, and the same words the
+        // notice line uses -- `/hear` and the coach must not disagree about
+        // what is being listened to.
+        let mix = situation(&hearing_tune(&[]), true);
+        assert!(mix.contains("the whole speaker mix"), "{mix}");
+
+        // It rides on the user turn, so it must not swallow the transcript.
+        assert!(watching.ends_with("\n\n"), "{watching:?}");
     }
 
     /// The write half of the voice book. `people.rs` proves the file round

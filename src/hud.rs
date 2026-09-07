@@ -830,7 +830,20 @@ impl State {
                             [72.0, ui.text_style_height(&TextStyle::Body)],
                             egui::Label::new(RichText::new(who).color(label).monospace()),
                         );
-                        ui.label(RichText::new(text).color(body));
+                        // The body goes in a *vertical* child, not straight into
+                        // this horizontal one. A horizontal layout hands its
+                        // children unbounded width, so a long turn ran off the
+                        // right-hand edge instead of wrapping — and a panel
+                        // whose sentences you cannot read the end of is worse
+                        // than one that is too tall. A vertical child is where
+                        // a paragraph belongs: it gets the width that is left
+                        // and wraps into it. `--preview` seeds a turn longer
+                        // than the panel so a screenshot can show this; every
+                        // seeded line used to fit on one row, which is why no
+                        // screenshot ever caught it.
+                        ui.vertical(|ui| {
+                            ui.label(RichText::new(text).color(body));
+                        });
                     });
                 }
             });
@@ -871,7 +884,7 @@ impl State {
                     egui::Grid::new("keys").spacing([18.0, 6.0]).show(ui, |ui| {
                         for (key, what) in legend() {
                             ui.label(RichText::new(key).color(ACCENT).monospace());
-                            ui.label(RichText::new(what).color(FG));
+                            ui.add(egui::Label::new(RichText::new(what).color(FG)).wrap());
                             ui.end_row();
                         }
                     });
@@ -883,7 +896,7 @@ impl State {
                     egui::Grid::new("commands").spacing([18.0, 6.0]).show(ui, |ui| {
                         for (command, _, what) in COMMANDS {
                             ui.label(RichText::new(command).color(ACCENT).monospace());
-                            ui.label(RichText::new(what).color(FG));
+                            ui.add(egui::Label::new(RichText::new(what).color(FG)).wrap());
                             ui.end_row();
                         }
                     });

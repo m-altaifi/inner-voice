@@ -66,6 +66,13 @@ OpenAI, Gemini, and OpenRouter require `IV_MODEL`/`--model`. Model availability,
 limits, and billing depend on the provider. The Anthropic wire retains fast-mode
 settings and needs a compatible model/account. See `.env.example` for keys.
 
+The panel is told what it is listening to before every turn — which app you
+selected, and whether you have spoken at all. Without that it guesses from the
+only shape it knows: a YouTube video used to produce advice about "the
+interview". If you have not spoken, it treats what it hears as something you
+are watching rather than a conversation you are in, and gives you `NOTE` lines
+instead of things to say.
+
 Edit `prompt.md` for the persona. Suggestions use `ASK`, `SAY`, `NOTE`, and `FIX`.
 Put call briefs in `knowledge/`: Markdown, text, CSV, spreadsheets
 (XLSX/XLSM/XLS/ODS), PDF, Word (.docx) and images (read by Windows OCR) are
