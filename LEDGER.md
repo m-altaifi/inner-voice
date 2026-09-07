@@ -7,6 +7,63 @@ Update the **Now** block after every work session. Nothing else here is chronolo
 
 ## Now
 
+**Portability pass (2026-09-07):** audited for whether a competent developer on
+another machine could clone this and run it without asking a question. The
+premise had to be narrowed first — Windows-only is a locked decision, so the
+target is *any reasonable Windows x64 machine*, not any machine.
+
+**1. CUDA was a hard requirement with no way round it.** `whisper-rs` carried
+`features = ["cuda"]` unconditionally, so a machine without an NVIDIA GPU and
+the toolkit failed at build. It is now `default = ["cuda"]` and
+`--no-default-features` builds whisper on CPU, with `build.ps1` no longer
+demanding `nvcc` on that path. Verified rather than assumed: the CPU build took
+2m41s, produced `ggml-cpu.lib` and no `ggml-cuda.lib`, and its exe runs
+`--setup` at `use gpu = 0`. **That run is also the honest ceiling — the warm-up
+inference measured 25.6 s on CPU against a few hundred ms on the GPU**, so
+`large-v3-turbo` cannot meet the 1.2 s budget there and every latency number in
+this ledger stays a CUDA number.
+
+**2. The README documented an interface that no longer exists.** After twelve
+keys became six it still told a new user to press Ctrl+Shift+F4 for the picker,
+F7 to ask, F8 to research, F10 to arm advice and F12 to pin — none of them
+registered — and named `/coach on` and `/coach off`, which are not in
+`COMMANDS`. The same stale names survived in `--setup`'s own output, in clap's
+`--help` on three flags, and twice in `.env.example`. Everything user-facing now
+names the **command** instead: `/research` does not renumber when a key does.
+`the_readme_documents_the_keys_and_commands_that_exist` guards both shapes of
+the drift and caught one of these lines that the fixing edit itself had missed.
+
+**3. Nothing declared a toolchain floor.** `rust-version = "1.95"` now does —
+eframe/egui's own MSRV, read out of the dependency tree, because edition 2024's
+1.85 would still have been ten releases short. The README also says at last that
+debug builds cannot link (LNK2038: prebuilt ONNX Runtime is `/MD`, `knf-rs-sys`
+goes `/MDd`) and that the build downloads its own ONNX Runtime, so it needs
+network beyond crates.io. Both were known and recorded only in CLAUDE.md.
+
+**4. `cargo test` needed an audio device.** `wasapi_loopback` expected a default
+render endpoint and turned red without one, so a VM, a CI runner or an RDP
+session failed for a reason unrelated to the code. It skips now — but only when
+there is *no endpoint at all*; a device that is present and refuses 16 kHz mono
+still fails, because that is the assumption `audio.rs` rests on. Checked against
+a real missing device rather than a mock: this machine has no capture endpoint
+under RDP.
+
+**Proved from a clean state, not from memory.** A fresh `git clone` into
+`C:\iv-clone` with no `.env`, no models and no inherited `IV_*` environment ran
+the documented commands verbatim: build **7m44s**, both `curl.exe` model
+downloads (28 MB and 547 MB), then `--setup` — **14 of 15 checks green**, CUDA
+warmed in 797 ms. The one failure is this RDP session having no microphone,
+which `--setup` names correctly along with its fix.
+
+**Left alone deliberately:** `build.ps1 fmt -- --check` already fails on the
+committed tree at 21 sites across `audio.rs`, `hud.rs`, `main.rs` and
+`roster.rs`. That is rustfmt's own output having moved, not a defect; satisfying
+it means whitespace churn in four files outside the portability scope (it
+explodes `NOT_A_NAME` into ninety lines), or pinning a toolchain to make a style
+check deterministic. Neither is portability work. Also unfixed: there is no CI,
+because no runner has an NVIDIA GPU, a microphone and speakers, so a workflow
+would either test nothing or be permanently red.
+
 **Accuracy pass (2026-09-07, overnight):** asked to iterate for accuracy, invent
 scenarios and test the whole thing. Four defects, three of them found by walking
 a *working day* rather than a single call — which is the lesson: every one
