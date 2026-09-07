@@ -622,13 +622,39 @@ fn route(
             if paused {
                 continue;
             }
-            if let Who::Them { voice, name } = who
-                && let Some(v) = *voice
-            {
-                last_voice = Some(v);
-                name_voice(&mut names, &mut guessed, &roster, v, text, called.as_deref());
-                remember(&book, &tx, &names, v);
-                *name = names.get(&v).cloned();
+            if let Who::Them { voice, name } = who {
+                match *voice {
+                    Some(v) => {
+                        last_voice = Some(v);
+                        name_voice(&mut names, &mut guessed, &roster, v, text, called.as_deref());
+                        remember(&book, &tx, &names, v);
+                        *name = names.get(&v).cloned();
+                    }
+                    // Heard a name with no voice to hang it on. Under
+                    // `voiceid::MIN_SAMPLES` (1.5 s) there is no cluster at all,
+                    // and a spoken self-introduction is short by nature -- with
+                    // the pre-roll and hang around it, "Hey, I'm Drew" straddles
+                    // that line rather than sitting safely over it, so it fails
+                    // *sometimes*, which is worse than failing always because
+                    // nobody notices.
+                    //
+                    // Binding it anyway is not on the table: with no embedding
+                    // there is nothing to say the next turn is the same person,
+                    // and the sentence after a self-introduction is usually
+                    // somebody else replying to it. That guess would be written
+                    // to `people.json` and repeated on every later call. So the
+                    // panel says what it heard and lets a human decide, which is
+                    // what `/who` is for.
+                    None => {
+                        if let Some(n) = roster::introduced(text) {
+                            let _ = tx.send(Msg::Sys(format!(
+                                "naming: heard {n} introduce themselves, but the clip \
+                                 was too short to tell voices apart — /who {n} names \
+                                 whoever spoke last"
+                            )));
+                        }
+                    }
+                }
             }
             // Either side can address someone, which is exactly why this lives
             // here: "Sarah, what do you think?" is usually said by YOU, on the
@@ -648,6 +674,7 @@ fn route(
                 && coaching
                 && who.is_them()
                 && text.split_whitespace().count() >= min_words
+                && worth_asking(text)
             {
                 // Not `coach.ask` — the far end may still be mid-thought, and
                 // the timeout arm above is where a settled one gets paid for.
@@ -659,6 +686,52 @@ fn route(
             return;
         }
     }
+}
+
+/// Words that are the whole turn and carry nothing: acknowledgements, filled
+/// pauses, greetings, thanks. Only ever consulted as "is *every* word one of
+/// these", so "yeah, but why" is not filler -- "why" is not on the list.
+///
+/// "no", "nope" and "nah" are deliberately absent. A bare negative is far more
+/// often a real and decisive answer -- "are we still doing the launch?" "No." --
+/// than a backchannel, and nothing here can tell the two apart, so it asks.
+const FILLER: &[&str] = &[
+    "yeah", "yep", "yup", "okay", "ok", "sure", "right", "alright", "fine", "cool", "great",
+    "good", "mm", "mmhmm", "mm-hmm", "hmm", "um", "uh", "uh-huh", "hi", "hello", "hey", "bye",
+    "thanks", "thank", "you", "please", "exactly", "totally", "gotcha",
+];
+
+/// Whether a finished far-end turn is worth paying a provider for.
+///
+/// `--min-words` alone is a very weak filter: "Hey I'm Drew" is exactly three
+/// words and bought a full request, and so does "yeah okay sure". This is the
+/// cheap local half of not spending money on nothing -- the other half is the
+/// settle window above, and whisper's own no-speech score in `audio.rs`, which
+/// between them cover fragments and hallucination. What is left for this to
+/// catch is speech that is real, finished, and still says nothing.
+///
+/// Deliberately timid, because a missed piece of advice costs more than a
+/// wasted request: a question mark or any digit asks unconditionally, and
+/// anything not matched asks.
+///
+/// ponytail: a word list, not a model. The known false negative is stated
+/// plainly -- a single ack can itself be the loaded answer ("should we go ahead
+/// with the layoffs?" "Sure.") and nothing here can see the question it
+/// answers. Tune the list from `--dump`, not from intuition.
+fn worth_asking(text: &str) -> bool {
+    let text = text.trim();
+    if text.ends_with('?') || text.chars().any(|c| c.is_ascii_digit()) {
+        return true;
+    }
+    let words: Vec<String> = text
+        .split_whitespace()
+        .map(|w| {
+            w.trim_matches(|c: char| !c.is_alphanumeric())
+                .to_lowercase()
+        })
+        .filter(|w| !w.is_empty())
+        .collect();
+    !words.is_empty() && !words.iter().all(|w| FILLER.contains(&w.as_str()))
 }
 
 /// Attach a name to the voice that just spoke, by the strongest evidence in
@@ -1249,6 +1322,47 @@ fn main() -> Result<()> {
 #[cfg(test)]
 mod tests {
 
+    /// The cheap local half of not paying for nothing. `--min-words` alone let
+    /// "yeah okay sure" through at exactly three words.
+    #[test]
+    fn an_acknowledgement_is_not_worth_a_request() {
+        for said in [
+            "yeah", "okay sure", "yeah, okay, sure", "YEAH OKAY SURE", "mm-hmm.", "uh-huh",
+            "thanks!", "thank you", "hey", "exactly", "right, right, right",
+        ] {
+            assert!(!worth_asking(said), "{said:?}");
+        }
+    }
+
+    /// Biased hard towards asking: everything here costs a request, on purpose.
+    /// A short question is the most valuable turn there is, and a bare negative
+    /// is usually a decisive answer rather than a backchannel.
+    #[test]
+    fn anything_that_might_matter_still_asks() {
+        for said in [
+            "why?",
+            "how long?",
+            "who owns it?",
+            "no",
+            "we're cutting the team",
+            "yeah 2",
+            "revenue is down 40 percent",
+            "Hey I'm Drew",
+            "yeah, but why",
+        ] {
+            assert!(worth_asking(said), "{said:?}");
+        }
+    }
+
+    /// A turn that survived the no-speech filter as pure punctuation is not a
+    /// turn. `audio.rs` already declines to send an empty one; this is the
+    /// belt-and-braces for whatever gets through as symbols only.
+    #[test]
+    fn a_turn_with_no_words_in_it_asks_nothing() {
+        assert!(!worth_asking("   "));
+        assert!(!worth_asking("..."));
+    }
+
     /// Drive the real `route` on a thread and watch what reaches the panel.
     ///
     /// The provider refuses the connection at once (port 1), so no network is
@@ -1313,6 +1427,43 @@ mod tests {
         ui.try_iter()
             .filter(|m| matches!(m, Msg::AdviceStart(_)))
             .count()
+    }
+
+    /// A spoken self-introduction is short by nature, and under
+    /// `voiceid::MIN_SAMPLES` there is no voice cluster to attach the name to
+    /// at all -- so `name_voice` was never even called and the name vanished
+    /// with no sign. Guessing is not available (nothing says the next turn is
+    /// the same person, and the sentence after an introduction is usually
+    /// somebody else answering it), so the panel says what it heard instead.
+    ///
+    /// Also pins the rendered text: this string is written with Rust line
+    /// continuations, which have silently flattened into runs of literal spaces
+    /// in this codebase before.
+    #[test]
+    fn a_name_heard_with_no_voice_to_attach_it_to_is_reported() {
+        let (turns, ui) = spawn_route(1000);
+        turns
+            .send(Msg::Turn(
+                Who::Them { voice: None, name: None },
+                "Hey, I am Drew".to_string(),
+            ))
+            .unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        let notice = ui
+            .try_iter()
+            .find_map(|m| match m {
+                Msg::Sys(s) if s.starts_with("naming:") => Some(s),
+                _ => None,
+            })
+            .expect("a heard name with no cluster must be reported");
+        assert_eq!(
+            notice,
+            "naming: heard Drew introduce themselves, but the clip was too short to tell voices apart — /who Drew names whoever spoke last"
+        );
+        // The prefix matters as much as the words: it is what gets the line
+        // past `pump`'s notice filter and onto the panel rather than only into
+        // Diagnostics.
+        assert!(notice.starts_with("naming: "));
     }
 
     /// **The reason `settle` exists.** One spoken question arrives as many
