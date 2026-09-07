@@ -120,11 +120,18 @@ limits, and billing depend on the provider. The Anthropic wire retains fast-mode
 settings and needs a compatible model/account. See `.env.example` for keys.
 
 The panel is told what it is listening to before every turn — which app you
-selected, and whether you have spoken at all. Without that it guesses from the
-only shape it knows: a YouTube video used to produce advice about "the
-interview". If you have not spoken, it treats what it hears as something you
-are watching rather than a conversation you are in, and gives you `NOTE` lines
-instead of things to say.
+selected, whether you have spoken at all, and which side just stopped talking.
+Without the first two it guesses from the only shape it knows: a YouTube video
+used to produce advice about "the interview". If you have not spoken, it treats
+what it hears as something you are watching rather than a conversation you are
+in, and gives you `NOTE` lines instead of things to say.
+
+**It watches you as well as them.** Your own finished turn is advised on too,
+and the job there is the opposite of answering it: what you just committed to,
+conceded, oversold, or answered beside the point — `FIX` and `NOTE`, not a line
+to say. It does not double the bill; an answer that follows straight on from the
+far end shares one `--settle` window and costs one request, so you only pay
+where the room actually falls quiet after you speak.
 
 Edit `prompt.md` for the persona. Suggestions use `ASK`, `SAY`, `NOTE`, and `FIX`.
 Put call briefs in `knowledge/`: Markdown, text, CSV, spreadsheets

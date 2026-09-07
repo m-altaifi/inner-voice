@@ -228,8 +228,17 @@ SAPI's if `--speak`).
   both speakers decode in parallel with no lock.
 - Each worker runs one throwaway inference at startup (`warm`), because the first
   CUDA call costs 100 ms+ and would otherwise land on the call's first turn.
-- `route()` keeps a 24-turn window and only asks the coach on a finished `THEM`
-  turn of `--min-words` or more.
+- `route()` keeps a 24-turn window and asks the coach on a finished turn of
+  `--min-words` or more that passes `worth_asking` — **from either side**. The
+  user's own turn counts: `FIX` exists to catch their vague or oversold line,
+  and while only `THEM` could trigger a request that tag could not arrive until
+  the far end's *next* turn, an exchange after the sentence was said. The
+  situation line carries a third fact for it (`mine`), because "react to the
+  newest line" is ambiguous exactly where it matters — a far-end line wants an
+  answer, the user's own wants reading back — and it cannot be inferred from the
+  transcript, whose newest line after a settle window is not necessarily the
+  turn that bought the request. The cost does not double: an answer that follows
+  straight on shares the far end's settle window and stays one request.
 - **Coach cancellation is a generation counter.** `ask()` bumps `seq`; the SSE
   reader abandons the stream when `live != seq`, and the HUD drops any
   `Msg::Advice` tagged with a superseded generation.
