@@ -1434,6 +1434,41 @@ mod tests {
         assert_eq!(Tag::Note.colours(), (MUTED, MUTED));
         assert_ne!(Tag::Say.colours().0, ACCENT);
     }
+    /// The README is the only interface a new user has before the panel is
+    /// running, and it went stale silently: after twelve keys became six it
+    /// still told people to press Ctrl+Shift+F4, F7, F8, F10 and F12, and
+    /// named `/coach on` and `/coach off`, none of which exist. Following the
+    /// documentation did nothing at all, which is worse than a missing page.
+    ///
+    /// Two halves, because the drift had both shapes: a key the README names
+    /// that is no longer registered, and a command the README never learned.
+    #[test]
+    fn the_readme_documents_the_keys_and_commands_that_exist() {
+        let readme = include_str!("../README.md");
+
+        for line in readme.lines() {
+            // The one line that may name them is the one saying they are free.
+            if line.contains("free for every other app") {
+                continue;
+            }
+            for n in KEYS.len() + 1..=12 {
+                assert!(
+                    !line.contains(&format!("Ctrl+Shift+F{n}")),
+                    "README presses Ctrl+Shift+F{n}, which nothing registers: {line}"
+                );
+            }
+        }
+
+        for (name, _, _) in COMMANDS {
+            // `/who <name>` is documented with its placeholder; match the verb.
+            let verb = name.split_whitespace().next().unwrap();
+            assert!(
+                readme.contains(verb),
+                "README never mentions the {verb} command"
+            );
+        }
+    }
+
     #[test]
     fn every_action_is_reachable_by_exactly_one_key() {
         let mut ids: Vec<usize> = KEYS.iter().map(|(_, id, _)| *id).collect();

@@ -8,7 +8,7 @@ hotkey.
 It is not call-shaped: nothing detects a call, and nothing ends with one. You
 start it when your working day starts and leave it running — pointing it at
 whichever apps matter (`--hear`, changeable mid-run) and arming advice only when
-you want it (`--manual`, `/coach on`).
+you want it (`--manual`, then Ctrl+Shift+F3).
 
 ## Setup
 
@@ -158,6 +158,8 @@ need any of it on the first day.
 | Command | Action |
 | --- | --- |
 | `/sources` | pick which apps are heard, from a list |
+| `/who` | who the panel can put a name to |
+| `/who <name>` | name the voice that just spoke; remembered on the next call |
 | `/hear` | report which apps are heard as THEM |
 | `/hear <app>[,<app>]` | hear only these; an app not yet running is waited for |
 | `/hear off` | back to the whole speaker mix |
@@ -176,8 +178,8 @@ anything. Quit has no hotkey on purpose: Alt+F4 closes the window.
 
 It was twelve keys. Each was defensible alone and the set was not: a panel whose
 claim is *don't make me look away* had a key list you had to look away to read.
-Nothing was removed — the seven that left became commands, and Ctrl+Shift+F7 to
-F12 are now free for every other app on the machine.
+Nothing was removed — the seven that left became commands, and
+Ctrl+Shift+F7 to F12 are now free for every other app on the machine.
 
 The panel's own commands take effect the moment you press Enter and hand the
 keyboard straight back to your call app.
@@ -201,13 +203,13 @@ seconds.
 Drag anywhere on the panel to move it — there is no title strip to aim for, and
 the panel is meant to sit wherever the call is not. An edge or corner resizes.
 Neither needs the panel focused first.
-Ctrl+Shift+F12 pins it: while pinned nothing moves or resizes it, and the status
+`/pin` pins it: while pinned nothing moves or resizes it, and the status
 line says so. Panel text is not selectable, which is what leaves the whole
 surface free to drag; nothing is lost, because the panel never holds keyboard
 focus and so could never have answered Ctrl+C.
 
 The panel never takes the keyboard from your call, not even when you click it —
-Ctrl+Shift+F7 is the one exception, and Enter or Escape hands the keyboard
+Ctrl+Shift+F2 is the one exception, and Enter or Escape hands the keyboard
 straight back. Pause discards buffered audio and invalidates in-flight
 transcription. Diagnostics are separate from the conversation.
 
@@ -239,8 +241,8 @@ Unrelated passages are not automatically sent.
 Guided setup is still planned; unsupported files receive an explicit error.
 This is not semantic search.
 
-Ctrl+Shift+F8 opens the research view. From any other view it just brings the
-last result back up; pressing it again while that result is already on screen
+`/research` opens the research view. From any other view it just brings the
+last result back up; typing it again while that result is already on screen
 starts a fresh job.
 
 With a coaching provider online and no `--agent-cmd`, research runs over the same
@@ -344,19 +346,20 @@ expensive and wrong — a meeting you are only half in, a video, someone at the
 next desk. `--manual` (or `IV_MANUAL=true`) starts it listening and *not*
 advising: turns are still transcribed, named, logged and kept in the 24-turn
 history, so the moment you arm it the coach already knows what has been said.
-Advice comes from F7 (ask a question) and F8 (research) until then.
+Advice comes from Ctrl+Shift+F2 (ask a question) and `/research` until then.
 
-Ctrl+Shift+F10 arms and mutes it. The status line always says which state it
-is in — `Listening · advice on request
-(F7/F8)` versus `Listening · <model>` — because otherwise a quiet coach and a
-broken one look identical.
+Ctrl+Shift+F3 arms and mutes it. The status line always says which state it
+is in — `Listening · advice on request (F2 asks)` versus
+`Listening · <model>` — because otherwise a quiet coach and a broken one look
+identical.
 
-This is not Pause. **F5 stops transcription altogether** and writes nothing
-down; `/coach off` keeps the record and only stops the unbidden advice.
+This is not Pause. **Ctrl+Shift+F4 stops transcription altogether** and writes
+nothing down; Ctrl+Shift+F3 keeps the record and only stops the unbidden
+advice.
 
 ### Changing what it hears, mid-run
 
-**Ctrl+Shift+F4 opens the picker.** It lists every app playing on the loopback
+**`/sources` opens the picker.** It lists every app playing on the loopback
 device, with the whole speaker mix as the first row. Click a row to hear it;
 click more to hear several at once; click it again to turn it off. The change
 lands within two seconds — no restart. Clicking needs no focus, so your call
@@ -366,7 +369,7 @@ An app you have selected that is not currently making a sound stays on the list
 marked `— not playing`, so you can always click it back off.
 
 The one thing a list cannot do is name an app that has not started yet — it has
-no audio session to appear in. For that, type it: Ctrl+Shift+F7, then a `/hear`
+no audio session to appear in. For that, type it: Ctrl+Shift+F2, then a `/hear`
 command.
 
 | Typed | Effect |
@@ -381,8 +384,8 @@ two-second poll that notices an app has closed. `IV_HEAR` in `.env` is the
 durable version of the same list; `/hear` is for the session and is not saved.
 
 For transcription with no coach and no network at all, add `--provider none`:
-turns still reach the panel, `logs/*.jsonl` and `--dump` still write, F7 still
-searches your reference files locally.
+turns still reach the panel, `logs/*.jsonl` and `--dump` still write,
+Ctrl+Shift+F2 still searches your reference files locally.
 
 An app stream is that app's own digital output, so there is no room noise to
 measure and no calibration second: it takes the floor gate (0.004) and reports
