@@ -7,6 +7,49 @@ Update the **Now** block after every work session. Nothing else here is chronolo
 
 ## Now
 
+**Vigilance and mindfulness (2026-09-07):** the panel advised on what it heard
+and never on what the user said. `FIX` — the one tag written for the user's own
+vague or oversold line — could only ride along with the far end's *next* turn,
+which is an exchange after the sentence was said and long past being walked
+back. `route` now owes a request on a finished turn from **either side**,
+through the same three gates as before (`--min-words`, `worth_asking`, the
+settle window).
+
+**The cost does not double, and the reason is structural rather than lucky.**
+The ordinary rhythm of a conversation — they ask, the user answers — has no
+real pause in the middle, so both turns share one settle window and buy one
+request. The bill only rises where the room actually falls quiet after the user
+speaks, which is exactly the turn worth advising on. Guarded three ways: the
+user's own claim buys advice, an answer following straight on does not buy a
+second, and "yeah, okay, sure" from the user costs nothing just as it already
+cost nothing from them.
+
+`situation()` carries a third fact. "React to the newest line" is ambiguous
+precisely where it matters — a far-end line wants an answer, the user's own
+wants reading back — and it cannot be inferred from the transcript, whose newest
+line after a settle window is not necessarily the turn that bought the request.
+It rides on the user turn beside the other two facts, never the cached system
+prompt, for the same reason they do. `prompt.md` names the posture the tag
+vocabulary was already half-built for: **vigilant** outward (the dodged
+question, the number that quietly changed between turns, the commitment made on
+the user's behalf) and **mindful** inward (what they just conceded, whether they
+answered the question asked or the one they wanted, whether they are agreeing
+faster than the evidence warrants).
+
+**124 tests, up from 120.** Both behavioural claims mutation-checked: restoring
+`who.is_them()` to the trigger fails exactly one test, and dropping the third
+fact from `situation` fails exactly one other. A fourth test fell out of it —
+`roster()` named its temp folder after the roster it held, so the two tests that
+both want `["Sara Osman"]` created, wrote and deleted the same path
+concurrently; the loser failed with NotFound. A naming test going red for
+reasons unrelated to naming, visible only when thread timing moved.
+
+**The open trade:** advice about the user's own turn arrives while they are
+still in the conversation they just spoke into, which is the point, but it is
+also a second thing on the panel during their own thinking time. Worth a real
+call before deciding whether it needs its own switch. `--manual` and Ctrl+Shift+F3
+already mute the whole lane if it proves noisy.
+
 **Provider-cost pass (2026-09-07):** four agents fanned out over the code to
 measure where paid requests are actually spent. Three layers now stand between
 audio and a request, each catching something the other two structurally cannot.
