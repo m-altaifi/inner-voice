@@ -1401,6 +1401,60 @@ mod tests {
             assert!(names.is_empty(), "{names:?}");
         }
 
+        /// The exact bytes a turn sends. Assembled from three places -- the
+        /// situation line, the history window, retrieved references -- and
+        /// nothing checked the seam between them, which is where a stray
+        /// newline or a missing separator would put the transcript inside the
+        /// bracket or the question inside the transcript.
+        ///
+        /// Run it with `--nocapture` to read the request as the model gets it.
+        #[test]
+        fn a_turn_sends_a_readable_request() {
+            let tune = hearing_tune(&["zoom"]);
+            let mut history = history::History::default();
+            for (who, text) in [
+                (
+                    Who::Them {
+                        voice: Some(0),
+                        name: Some("Ada Lovelace".into()),
+                    },
+                    "we can have the migration done by the eleventh",
+                ),
+                (Who::You, "what happens to the read replicas during it?"),
+                (
+                    Who::Them {
+                        voice: Some(0),
+                        name: Some("Ada Lovelace".into()),
+                    },
+                    "they lag, but only for a few minutes",
+                ),
+            ] {
+                history.push(history::Turn::Speech {
+                    who,
+                    text: text.to_string(),
+                });
+            }
+            let request = format!("{}{}", situation(&tune, history.user_spoke()), history.render());
+            println!("--- request ---\n{request}\n--- end ---");
+
+            let lines: Vec<&str> = request.lines().collect();
+            // The situation is one line, then a blank one, then the transcript.
+            // Without the blank line the first turn reads as part of the
+            // bracketed note.
+            assert!(lines[0].starts_with("[Audio source: \"zoom\""), "{request}");
+            assert!(lines[0].ends_with(']'), "the note must close: {request}");
+            assert_eq!(lines[1], "", "{request}");
+
+            // One turn per line, each labelled, each quoted. A speaker's name
+            // stands where THEM would -- that is the whole point of naming --
+            // so the quoting is what stops a spoken newline forging the next
+            // label.
+            assert_eq!(lines.len(), 5, "{request}");
+            assert!(lines[2].starts_with("Ada Lovelace: \""), "{request}");
+            assert!(lines[3].starts_with("YOU: \""), "{request}");
+            assert!(lines[4].starts_with("Ada Lovelace: \""), "{request}");
+        }
+
         /// A whole day in one test: a call in the morning, a video in the
         /// afternoon. `spoken` used to be a flag set by the first microphone
         /// turn and never cleared, so the video was described to the coach as a
