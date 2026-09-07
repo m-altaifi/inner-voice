@@ -52,6 +52,15 @@ pub fn sessions(dev: &Device) -> Result<Vec<AppSession>> {
         if pid == 0 {
             continue; // the system-sounds session has no process
         }
+        // Our own render session, which exists because the panel captures the
+        // endpoint (and speaks, with --speak). Excluded for the same reason
+        // system sounds are: it is not an app anyone is listening to, it is
+        // never a valid `--hear` target, and the coach's source line would
+        // otherwise report the panel back to itself as "currently playing:
+        // inner-voice".
+        if pid == std::process::id() {
+            continue;
+        }
         let mut name = session.get_display_name().unwrap_or_default();
         if name.is_empty() {
             name = image_stem(pid).unwrap_or_default();
