@@ -114,7 +114,7 @@ struct Args {
     #[arg(long, env = "IV_PROMPT", default_value = "prompt.md")]
     prompt: String,
 
-    /// Research persona (F8). Falls back to a built-in prompt if missing.
+    /// Research persona (/research). Falls back to a built-in prompt if missing.
     #[arg(long, env = "IV_RESEARCH_PROMPT", default_value = "research.md")]
     research_prompt: String,
 
@@ -188,7 +188,7 @@ struct Args {
     #[arg(long, env = "IV_ALPHA", default_value_t = 240)]
     alpha: u8,
 
-    /// Route F8 research through Claude Code's claude.exe instead of the provider
+    /// Route /research through Claude Code's claude.exe instead of the provider
     #[arg(long, env = "IV_AGENT_CMD")]
     agent_cmd: Option<std::path::PathBuf>,
 
@@ -200,7 +200,7 @@ struct Args {
     #[arg(long, env = "IV_AGENT_TIMEOUT", default_value_t = 90, value_parser = clap::value_parser!(u64).range(5..=300))]
     agent_timeout: u64,
 
-    /// Optional literal filename search to include in F8 research
+    /// Optional literal filename search to include in /research
     #[arg(long, env = "IV_SEARCH_QUERY")]
     search_query: Option<String>,
 
@@ -435,7 +435,7 @@ fn route(
                 continue;
             }
             Msg::Question(question) => {
-                // The panel has no controls by design, so F7's box is the one
+                // The panel has no controls by design, so the question box is the one
                 // place a name can be typed — which makes it the app selector
                 // too. A command here costs no hotkey and no new surface, and
                 // unlike a list of what is playing it can register an app that
@@ -504,7 +504,7 @@ fn route(
                     agent.ask(format!("{transcript}{}", references.retrieve(&transcript)));
                 } else if let Some(coach) = &coach {
                     // Research the newest THEM line — that is the question the
-                    // user pressed F8 about — with the wide passage window.
+                    // user asked /research about — with the wide passage window.
                     let query = if last_them.is_empty() {
                         &transcript
                     } else {
@@ -1050,7 +1050,7 @@ fn main() -> Result<()> {
         Some(p) => format!("coach: {} {}", args.provider, p.model),
         None => "coach: off, transcript only".to_string(),
     };
-    // F8 works with a CLI *or* a provider now; only `--provider none` with no
+    // /research works with a CLI *or* a provider now; only `--provider none` with no
     // CLI leaves it off, and then the keys are not registered at all.
     let research_enabled = agent_config.is_some() || provider.is_some();
     let research_prompt = std::fs::read_to_string(&args.research_prompt)

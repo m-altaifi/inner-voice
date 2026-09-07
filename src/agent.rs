@@ -131,7 +131,7 @@ fn research(config: &Config, transcript: &str, cancel: &AtomicBool) -> Result<St
         // where `.env` (provider keys) lives. Unverified against the CLI
         // until the first real press: a rejected flag surfaces as
         // `unknown option` inside the no-answer error, which is exactly
-        // what the first F8 through claude.exe is checking.
+        // what the first /research through claude.exe is checking.
         "--disallowedTools",
         "Read(./.env)",
         "--max-turns",

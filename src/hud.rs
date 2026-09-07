@@ -1446,16 +1446,28 @@ mod tests {
     fn the_readme_documents_the_keys_and_commands_that_exist() {
         let readme = include_str!("../README.md");
 
-        for line in readme.lines() {
-            // The one line that may name them is the one saying they are free.
-            if line.contains("free for every other app") {
-                continue;
-            }
-            for n in KEYS.len() + 1..=12 {
-                assert!(
-                    !line.contains(&format!("Ctrl+Shift+F{n}")),
-                    "README presses Ctrl+Shift+F{n}, which nothing registers: {line}"
-                );
+        // `.env.example` too: the same stale names outlived the first sweep
+        // there and in `--setup`'s own output, because a key written as a
+        // literal in prose is unreachable from `fkey` and moves with nothing.
+        // Anything user-facing should name the *command* -- `/research` does
+        // not renumber when a key does.
+        for (where_, text) in [("README", readme), (".env.example", include_str!("../.env.example"))]
+        {
+            for line in text.lines() {
+                // The one line that may name them says they are free.
+                if line.contains("free for every other app") {
+                    continue;
+                }
+                for n in KEYS.len() + 1..=12 {
+                    assert!(
+                        !line.contains(&format!("Ctrl+Shift+F{n}")),
+                        "{where_} presses Ctrl+Shift+F{n}, which nothing registers: {line}"
+                    );
+                    assert!(
+                        !line.contains(&format!("F{n}")),
+                        "{where_} names F{n}, which is not a key any more -- name the command: {line}"
+                    );
+                }
             }
         }
 

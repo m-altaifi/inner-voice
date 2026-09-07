@@ -121,7 +121,7 @@ pub fn run(
     drop(job);
     let _ = child.wait();
     // A cancelled or timed-out job returns without waiting for anything at all:
-    // its output is being thrown away regardless, and F9 has to feel immediate.
+    // its output is being thrown away regardless, and /cancel has to feel immediate.
     let status = result?;
     if !status.success() {
         let err = errors

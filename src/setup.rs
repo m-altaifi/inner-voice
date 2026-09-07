@@ -262,7 +262,7 @@ pub fn run(inputs: &Inputs, enumerator: &DeviceEnumerator) -> Vec<Check> {
         Some(exe) if Path::new(exe).is_file() => Check {
             name: "research",
             ok: true,
-            detail: format!("F8 routes through {exe}"),
+            detail: format!("/research routes through {exe}"),
         },
         Some(exe) => Check {
             name: "research",
@@ -272,7 +272,7 @@ pub fn run(inputs: &Inputs, enumerator: &DeviceEnumerator) -> Vec<Check> {
         None => Check {
             name: "research",
             ok: true,
-            detail: "optional: F8 uses the provider; set IV_AGENT_CMD to route it through Claude Code"
+            detail: "optional: /research uses the provider; set IV_AGENT_CMD to route it through Claude Code"
                 .into(),
         },
     });
