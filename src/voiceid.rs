@@ -88,7 +88,12 @@ impl VoiceId {
         // A poisoned lock means the naming thread panicked. The call is worth
         // more than the attribution, so this degrades to anonymous turns.
         let mut book = self.book.lock().ok()?;
-        assign(&mut book.people, &emb, cap)
+        let i = assign(&mut book.people, &emb, cap)?;
+        // `assign` is pure and has no clock, so the date is stamped here. The
+        // unsure band returns early above: a turn nobody could attribute is not
+        // evidence that anybody was heard.
+        book.heard(i);
+        Some(i)
     }
 
     /// One utterance -> one unit-length embedding.
@@ -175,6 +180,10 @@ fn assign(voices: &mut Vec<Person>, emb: &[f32], cap: usize) -> Option<usize> {
                 name: None,
                 centroid: emb.to_vec(),
                 turns: 1,
+                // Stamped by `Book::heard` the moment this returns. Zero is the
+                // safe placeholder: `forget` reads it as ancient, and an
+                // anonymous cluster is never written to the file anyway.
+                last_seen: 0,
             });
             Some(voices.len() - 1)
         }
@@ -211,6 +220,7 @@ mod tests {
                 name: Some(n.to_string()),
                 centroid: basis(*axis),
                 turns: 1,
+                last_seen: crate::people::now(),
             })
             .collect()
     }
@@ -266,6 +276,7 @@ mod tests {
             name: Some("From another model".into()),
             centroid: vec![1.0; DIM * 2],
             turns: 9,
+            last_seen: crate::people::now(),
         }];
         let room = cap(&v);
         assert_eq!(assign(&mut v, &basis(0), room), Some(1));

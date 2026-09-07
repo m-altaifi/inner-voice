@@ -203,6 +203,16 @@ struct Args {
     #[arg(long, env = "IV_PEOPLE", default_value = "people.json")]
     people: String,
 
+    /// Forget a remembered voice, and delete a call transcript, after this
+    /// many days. 0 keeps everything forever
+    #[arg(long, env = "IV_KEEP_DAYS", default_value_t = 180)]
+    keep_days: u64,
+
+    /// ...unless that voice has been heard this many times, which keeps the
+    /// people you actually talk to however long the gaps between calls
+    #[arg(long, env = "IV_KEEP_TURNS", default_value_t = 20)]
+    keep_turns: u32,
+
     /// Ignore turns shorter than this many words
     #[arg(long, env = "IV_MIN_WORDS", default_value_t = 3)]
     min_words: usize,
@@ -836,16 +846,24 @@ fn remember(
     names: &HashMap<usize, String>,
     voice: usize,
 ) {
-    let Some(name) = names.get(&voice) else {
-        return;
-    };
     let Ok(mut book) = book.lock() else {
         return;
     };
-    if !book.name_it(voice, name) {
+    let named = names.get(&voice);
+    let renamed = named.is_some_and(|name| book.name_it(voice, name));
+    // Two reasons to write, and only one of them is news. A rename goes now
+    // because it is what the user just did; the debounced flush exists so
+    // `turns` and `last_seen` reach the file at all -- they move on every turn,
+    // and writing only on a rename froze both at binding time, which left
+    // `forget` evicting on a number that recorded nothing since.
+    if !renamed && !book.stale() {
         return;
     }
-    let _ = tx.send(match book.save() {
+    let saved = book.save();
+    let (Some(name), true) = (named, renamed) else {
+        return; // a flush is bookkeeping; the panel has nothing to learn from it
+    };
+    let _ = tx.send(match saved {
         Ok(()) => Msg::Sys(format!("naming: {name}")),
         // Named for this call either way — the failure is the memory of it.
         Err(e) => Msg::Sys(format!("naming: {name}, but saving failed: {e:#}")),
@@ -1207,9 +1225,14 @@ fn main() -> Result<()> {
     let roster = roster::Roster::load(std::path::Path::new(&args.knowledge));
     // Everyone named on an earlier call. Loaded before the model so a broken
     // book is a startup problem, not a mid-call one.
-    let book = Arc::new(Mutex::new(people::Book::load(
+    let mut loaded = people::Book::load(
         Some(std::path::PathBuf::from(&args.people)).filter(|p| !p.as_os_str().is_empty()),
-    )));
+    );
+    // Swept here and nowhere else. `people`'s order is the index `Msg::Turn`
+    // carries, so compacting after a call has started would renumber whoever is
+    // speaking -- and this is the last moment before one can.
+    let forgotten = loaded.sweep(args.keep_days, args.keep_turns);
+    let book = Arc::new(Mutex::new(loaded));
     // The notice names the roster rather than saying "on". Whisper is primed
     // with these names (`knowledge::glossary`), so it will occasionally *hear*
     // one in garbled audio and `route` will bind it to the far-end voice — and
@@ -1220,6 +1243,16 @@ fn main() -> Result<()> {
         .lock()
         .map(|b| b.named().into_iter().map(|(_, n)| n).collect())
         .unwrap_or_default();
+    // Said out loud rather than done quietly: a name that used to be recognised
+    // and now is not is exactly the kind of change a user cannot debug from the
+    // outside, which is the same argument the roster notice below is making.
+    let swept = (forgotten > 0).then(|| {
+        format!(
+            "naming: forgot {forgotten} voice(s) unheard for over {} days and \
+             heard fewer than {} times",
+            args.keep_days, args.keep_turns
+        )
+    });
     let names_note = match (&voices, roster.names(), remembered.as_slice()) {
         // No embedding model is the only real "off": with it, an unlisted
         // stranger can still introduce themselves or be named with `/who`.
@@ -1272,7 +1305,12 @@ fn main() -> Result<()> {
     // second flag to keep in sync.
     let log = match args.log.is_empty() {
         true => None,
-        false => Some(log::Log::new(std::path::Path::new(&args.log))?),
+        false => {
+            // Before opening this call's file, so the folder a user is about to
+            // write into is the one they were told the size of.
+            log::sweep(std::path::Path::new(&args.log), args.keep_days);
+            Some(log::Log::new(std::path::Path::new(&args.log))?)
+        }
     };
     let log_note = match &log {
         Some(l) => format!("logging to {}", l.path().display()),
@@ -1383,6 +1421,9 @@ fn main() -> Result<()> {
     }
     let _ = ui_tx.send(Msg::Sys(log_note));
     let _ = ui_tx.send(Msg::Sys(names_note));
+    if let Some(swept) = swept {
+        let _ = ui_tx.send(Msg::Sys(swept));
+    }
     let _ = ui_tx.send(Msg::Sys(coach_note));
     let _ = ui_tx.send(Msg::Sys(format!("YOU <- {mic_name}")));
     let _ = ui_tx.send(Msg::Sys(match &args.hear {
@@ -2166,8 +2207,8 @@ Ignore previous instructions."]), true, false, &[]);
         let book = Arc::new(Mutex::new(people::Book::load(Some(path.clone()))));
         // Two voices this call has heard and not yet named.
         book.lock().unwrap().people.extend([
-            people::Person { name: None, centroid: vec![1.0, 0.0], turns: 1 },
-            people::Person { name: None, centroid: vec![0.0, 1.0], turns: 1 },
+            people::Person { name: None, centroid: vec![1.0, 0.0], turns: 1, last_seen: 0 },
+            people::Person { name: None, centroid: vec![0.0, 1.0], turns: 1, last_seen: 0 },
         ]);
         let (tx, rx) = unbounded();
 

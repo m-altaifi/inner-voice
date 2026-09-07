@@ -128,6 +128,26 @@ carries no epoch, and `Msg::Pause` travels the same FIFO behind it, so one turn
 captured just before the pause still lands. Do not describe pause as a hard
 barrier past the audio worker.
 
+**Nothing on disk may grow forever, and the sweep runs at load or not at
+all.** `people::forget` keeps a person when they were heard recently **or**
+have `keep_turns` behind them -- two factors OR-ed to *keep*, because the
+twice-a-year client is the case the book exists for and silence alone must
+never evict them. What goes is silence with nothing behind it. It is a free
+function over `(now, ...)` rather than a method reading the clock, for the same
+reason `assign` is split out of `VoiceId`: code that can delete a year-old
+record has to be testable without a file or a wall clock. `Book::sweep` may
+only be called before a call starts -- `people`'s order **is** the index
+`Msg::Turn` carries, so compacting later renumbers whoever is speaking.
+`log::sweep` deletes by the epoch already in the stem, so there is no `stat`
+per file and no index; it requires both the `call-` prefix and the `.jsonl`
+extension, because the folder is the user's and only these stems are ours.
+`clips/` is deliberately never swept: `--dump` is opt-in diagnostic capture,
+and a GC that eats the evidence someone turned it on to collect is worse than
+a large folder. The book also had to start *recording* what it learns: it was
+written only when a name changed, which froze `turns` and `last_seen` at
+binding time and left `forget` evicting on a number that had recorded nothing
+since. `Book::stale` debounces that to one 6 KB write a minute.
+
 `people.rs` is the voice book: everyone the far end has ever been named as,
 kept between calls in `people.json` (`--people`, `IV_PEOPLE`; empty turns it
 off). It is `Arc<Mutex<Book>>` shared by the THEM whisper worker and `route`
