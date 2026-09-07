@@ -1583,10 +1583,16 @@ mod tests {
         use super::hearing_tune;
 
         fn roster(names: &[&str]) -> roster::Roster {
+            // Named by a counter, not by the roster it holds. Two tests both
+            // wanting `["Sara Osman"]` used to build, write and delete the
+            // *same* directory concurrently, and whichever lost the race failed
+            // its write with NotFound — a red test about naming that had
+            // nothing to do with naming.
+            static SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
             let dir = std::env::temp_dir().join(format!(
                 "iv_scn_{}_{}",
                 std::process::id(),
-                names.join("_")
+                SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
             ));
             std::fs::create_dir_all(&dir).unwrap();
             let mut csv = String::from("name,role\n");
