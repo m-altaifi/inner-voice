@@ -25,6 +25,20 @@ The build also downloads its own ONNX Runtime from pyke's CDN, so it needs
 network access beyond crates.io. A vendored or air-gapped build has to supply
 that separately.
 
+Without an NVIDIA GPU, drop the `cuda` feature — no CUDA toolkit is then
+needed, and `build.ps1` stops asking for one:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\build.ps1 build --release --no-default-features
+```
+
+That path compiles and runs, and that is the whole claim. Every latency number
+here was measured on CUDA. Measured on CPU, `--setup`'s warm-up inference took
+**25.6 s** against a few hundred milliseconds on the GPU, so `large-v3-turbo`
+will not come near the ~1.2 s budget the design rests on. Use a smaller model
+on that path — and note that `--setup` reports the backend it was built with,
+so the line reads `whisper (cpu)` rather than `cuda`.
+
 Copy and paste the whole block. It builds, fetches both models, and creates
 `.env`:
 
@@ -306,8 +320,10 @@ tools. Claude Code is the only supported optional research CLI.
 
 ## File search
 
-Install Everything and `es.exe`, start the indexer, and ensure your drive is
-indexed. The app does not change indexing settings.
+Install [Everything](https://www.voidtools.com/downloads/) and its command
+line tool `es.exe`, start the indexer, and ensure your drive is indexed. Put
+`es.exe` beside the app or point `--es`/`IV_ES` at it. The app does not change
+indexing settings.
 
 ```powershell
 .\target\release\inner-voice.exe --search-files 'coach.rs' --es .\es.exe

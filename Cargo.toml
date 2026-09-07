@@ -7,6 +7,16 @@ edition = "2024"
 # a dependency instead of saying what to install.
 rust-version = "1.95"
 
+# CUDA is the default and what every measured number here was taken on.
+# It is a feature rather than a hardcoded dependency feature so a machine
+# without an NVIDIA GPU can still build and run the thing:
+# `cargo build --release --no-default-features`. That path is compiled and
+# nothing more: large-v3-turbo's warm-up inference measured 25.6 s on CPU
+# against a few hundred ms on the GPU, so that build wants a smaller model.
+[features]
+default = ["cuda"]
+cuda = ["whisper-rs/cuda"]
+
 [dependencies]
 anyhow = "1.0.104"
 calamine = "0.36.1"
@@ -24,7 +34,7 @@ raw-window-handle = "0.6.2"
 serde_json = "1.0.151"
 ureq = { version = "3.4.0", features = ["json"] }
 wasapi = "0.24.0"
-whisper-rs = { version = "0.16.0", features = ["cuda"] }
+whisper-rs = "0.16.0"
 windows = { version = "0.62.2", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_UI_WindowsAndMessaging", "Win32_System_LibraryLoader", "Win32_Media_Speech", "Win32_System_Com", "Win32_UI_Input_KeyboardAndMouse", "Win32_System_JobObjects", "Win32_System_Threading", "Win32_Security", "Win32_UI_Shell", "Media_Ocr", "Graphics_Imaging", "Storage", "Storage_Streams", "Foundation", "Foundation_Collections"] }
 winit = "0.30.13"
 zip = { version = "8.6.0", default-features = false, features = ["deflate"] }

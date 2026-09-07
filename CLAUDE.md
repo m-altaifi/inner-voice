@@ -32,7 +32,20 @@ after the script name is forwarded to cargo.
   direction. That still needs a real call with `--dump`.
 - The live provider test in `src/coach.rs` costs money and is opt-in:
   `$env:IV_LIVE_TEST=1; .\build.ps1 test --release live_provider`.
-- `CMAKE_CUDA_ARCHITECTURES` in `build.ps1` is hardcoded to `86` (RTX 3080 Ti).
+- `CMAKE_CUDA_ARCHITECTURES` defaults to `native` and honours the environment
+  variable; it was hardcoded to `86` (RTX 3080 Ti) and is not any more.
+- **CUDA is a cargo feature, on by default.** `--no-default-features` builds
+  whisper on CPU, and `build.ps1` then stops requiring `nvcc` (cmake and
+  Ninja are still needed: whisper.cpp is built with cmake either way). That
+  path is compiled and *run* and nothing more — every latency number in
+  LEDGER.md was taken on CUDA, and `large-v3-turbo`'s warm-up inference
+  measured 25.6 s on CPU against a few hundred ms on the GPU. Do not quote a
+  CPU build as evidence about latency. `setup`'s check is named for the
+  backend actually built, so a CPU build is not told to go fix its NVIDIA
+  driver.
+- The floor toolchain is `rust-version = "1.95"` in Cargo.toml — eframe/egui's
+  own declared MSRV, which is above edition 2024's 1.85, so the edition is not
+  the number to reason from.
 - `.\target\release\inner-voice.exe --setup` is the first thing to run on a new
   machine or after editing `.env`: it loads the model, warms CUDA, lists devices
   and playing apps, times the provider's first token, and checks OCR and the

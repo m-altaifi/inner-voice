@@ -74,7 +74,14 @@ pub fn run(inputs: &Inputs, enumerator: &DeviceEnumerator) -> Vec<Check> {
         },
     });
 
-    // "Does it run", not accuracy: one warm-up inference on the GPU, timed.
+    // "Does it run", not accuracy: one warm-up inference, timed. Named for what
+    // was actually built -- a CPU build sent to check its NVIDIA driver would be
+    // chasing a device it never asked for.
+    let backend = if cfg!(feature = "cuda") {
+        "cuda"
+    } else {
+        "whisper (cpu)"
+    };
     checks.push(if model.exists() {
         let started = std::time::Instant::now();
         let mut params = WhisperContextParameters::default();
@@ -85,7 +92,7 @@ pub fn run(inputs: &Inputs, enumerator: &DeviceEnumerator) -> Vec<Check> {
             Ok(mut state) => {
                 audio::warm(&mut state);
                 Check {
-                    name: "cuda",
+                    name: backend,
                     ok: true,
                     detail: format!(
                         "model loaded and warmed in {} ms",
@@ -94,14 +101,19 @@ pub fn run(inputs: &Inputs, enumerator: &DeviceEnumerator) -> Vec<Check> {
                 }
             }
             Err(e) => Check {
-                name: "cuda",
+                name: backend,
                 ok: false,
-                detail: format!("{e} — check the NVIDIA driver and CUDA install; see README"),
+                detail: match cfg!(feature = "cuda") {
+                    true => {
+                        format!("{e} — check the NVIDIA driver and CUDA install; see README")
+                    }
+                    false => format!("{e} — built without the cuda feature; see README"),
+                },
             },
         }
     } else {
         Check {
-            name: "cuda",
+            name: backend,
             ok: false,
             detail: "skipped: no model to load".into(),
         }

@@ -19,7 +19,13 @@ $vs = if ($env:IV_VS_PATH) { $env:IV_VS_PATH } elseif (Test-Path -LiteralPath $v
 if (-not $vs) { throw 'Install Visual Studio C++ build tools, or set IV_VS_PATH.' }
 $cm = "$vs\Common7\IDE\CommonExtensions\Microsoft\CMake"
 $cuda = if ($env:CUDA_PATH) { $env:CUDA_PATH } else { "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.8" }
-foreach ($required in @("$cuda\bin\nvcc.exe", "$cm\CMake\bin\cmake.exe", "$cm\Ninja\ninja.exe")) {
+# A CPU build asks for none of the CUDA apparatus, so do not demand it. cmake
+# and Ninja are still needed either way: whisper.cpp is built with cmake
+# whichever backend it targets.
+$wantsCuda = -not ($args -contains '--no-default-features')
+$needed = @("$cm\CMake\bin\cmake.exe", "$cm\Ninja\ninja.exe")
+if ($wantsCuda) { $needed += "$cuda\bin\nvcc.exe" }
+foreach ($required in $needed) {
     if (-not (Test-Path -LiteralPath $required)) { throw "Missing build prerequisite: $required" }
 }
 $cargo = (Get-Command cargo.exe -ErrorAction Stop).Source

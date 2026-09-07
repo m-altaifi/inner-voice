@@ -1,4 +1,7 @@
 target/
+# A second build (a CPU one, say) wants its own --target-dir; none of them
+# belong here.
+target-*/
 models/*.bin
 build.log
 es.exe
