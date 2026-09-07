@@ -7,6 +7,76 @@ Update the **Now** block after every work session. Nothing else here is chronolo
 
 ## Now
 
+**Provider-cost pass (2026-09-07):** four agents fanned out over the code to
+measure where paid requests are actually spent. Three layers now stand between
+audio and a request, each catching something the other two structurally cannot.
+
+**1. Whisper scores its own hallucinations and nobody was reading it.** Near
+silence makes it invent fluent boilerplate — "Thanks for watching", subtitle
+credits — and as *text* that is indistinguishable from speech, so every gate
+downstream passed it: three words clears `--min-words`, it becomes a turn,
+enters the history, is written to the log, and buys a request. Unbounded by
+whether anyone is talking to the user, because background audio crossing the
+calibrated gate is enough. `no_speech_probability()` is per segment and was
+never read. Filtering it inside `transcribe` costs nothing extra: the utterance
+leaves empty and the existing `!text.is_empty()` check already declines to send
+a turn — no new message, no new field.
+
+**2. One question was costing eight requests.** The VAD ends a turn after 500 ms
+of quiet, which is shorter than the pause between two sentences of one thought,
+so a spoken question arrives as many turns and each bought a request — seven of
+the answers discarded the moment the next fragment landed. `Coach::ask`'s
+`bounded(1)` only collapses what arrives *while* a request is in flight, and
+natural speech gaps are longer than the round-trip. Worse than the count:
+`cache_control` sits on the system block only, so `messages` is never cached and
+each redundant request re-billed the whole 24-turn window and every reference
+excerpt with it. `--settle` (default 800 ms) waits for the far end to stop, and
+builds the prompt at fire time so the seven prompts we used to assemble and
+throw away are never assembled. Measured by driving the real `route` against a
+refused provider and counting `AdviceStart`: **4 requests became 1**.
+
+**3. `--min-words 3` let "yeah okay sure" through.** `worth_asking` skips a turn
+whose every word is a backchannel. Deliberately timid: a question mark or any
+digit asks unconditionally, and "no" is off the list because a bare negative is
+usually a decisive answer rather than an acknowledgement.
+
+**Two naming defects, both found by writing the test rather than reading the
+code.** The three evidence tiers are documented as *falling*, but `name_voice`
+only knew "named" from "blank" — so the weakest tier permanently blocked the
+strongest. "Marcus, can you confirm?" names whoever speaks next, which on a
+shared line is usually not the person addressed, and "Actually, I'm Priya" could
+not take it back for the rest of the call. `guessed` is the missing distinction.
+Writing that test then exposed an older bug beneath it: `roster::introduced`
+returned **"Priya Marcus"**, because `name_at` takes a second capitalised word as
+a surname without checking whether the first ended the clause, and `bare` strips
+the comma before it can be seen. "I'm Drew, Sarah's colleague" enrolled one
+person under two people's names. Existing coverage missed it because "I'm Ada,
+the platform lead" only passed on "the" being in `NOT_A_NAME` — no test ever put
+a plausible name after the comma.
+
+**A heard name with no voice to attach it to is now said out loud.** Under
+`voiceid`'s 1.5 s floor there is no cluster at all, so the naming block was
+skipped entirely and the name vanished with no sign. With pre-roll and hang
+around it, "Hey, I'm Drew" *straddles* that floor rather than sitting under it,
+so it failed intermittently — worse than failing always, because nobody
+notices. Binding it anyway was considered and rejected: nothing says the next
+turn is the same person, and the sentence after a self-introduction is usually
+somebody else replying to it, so the guess would reach `people.json` and repeat
+on every later call. The panel reports what it heard and points at `/who`.
+
+**120 tests, up from 109**, and every behavioural fix mutation-checked against
+the code it replaced. Two of those checks earned their keep on the spot:
+inverting the no-speech threshold left `gpu_transcribes`' transcript byte for
+byte identical, proving that test was no evidence about this filter at all and
+forcing the `speech()` seam that can actually be checked; and the notice test
+caught Rust line continuations flattening into runs of literal spaces — in its
+own expected string, which is the third time that trap has been paid for here.
+
+**Still unvalidated, and now more consequential:** `NO_SPEECH` (0.9) and
+`voiceid`'s 0.70/0.50 both need real `--dump` audio. `--settle 800` is a
+deliberate trade rather than a free win — advice on the turn that matters
+arrives 800 ms later, and `--settle 0` restores the old behaviour.
+
 **Portability pass (2026-09-07):** audited for whether a competent developer on
 another machine could clone this and run it without asking a question. The
 premise had to be narrowed first — Windows-only is a locked decision, so the
