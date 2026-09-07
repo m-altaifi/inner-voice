@@ -558,7 +558,7 @@ pub fn run(input: Input, ctx: Arc<WhisperContext>, tx: Sender<Msg>, tune: Arc<Tu
     let selectable = who.is_them();
     // `who` moves to the worker, which is what stamps each turn; the capture
     // loop keeps only the display label for its own status messages.
-    let label = who.label().to_string();
+    let label = who.label();
     let (utt_tx, utt_rx) = unbounded::<(u64, Vec<f32>)>();
     {
         let (ctx, tx, tune) = (ctx.clone(), tx.clone(), tune.clone());
@@ -623,7 +623,7 @@ pub fn run(input: Input, ctx: Arc<WhisperContext>, tx: Sender<Msg>, tune: Arc<Tu
                 };
                 if let Some(dir) = &tune.dump {
                     // A failed dump must never take the call down with it.
-                    if let Err(e) = save(dir, turn.label(), &utt, &text) {
+                    if let Err(e) = save(dir, &turn.label(), &utt, &text) {
                         let _ = tx.send(Msg::Sys(format!("dump: {e}")));
                     }
                 }

@@ -513,7 +513,7 @@ impl State {
             };
             match message {
                 Msg::Turn(who, text) => {
-                    remember(&mut self.transcript, (who.label().to_string(), text))
+                    remember(&mut self.transcript, (who.label(), text))
                 }
                 Msg::Sys(text) => {
                     if text.contains("failed")

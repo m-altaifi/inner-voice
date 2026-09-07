@@ -72,14 +72,37 @@ pub enum Who {
 }
 
 impl Who {
-    /// What the panel and the model's transcript both call this speaker.
-    pub fn label(&self) -> &str {
+    /// What the panel, the log and the model's transcript all call this
+    /// speaker.
+    ///
+    /// **A cluster with no name is still a distinct person.** `voiceid` does
+    /// the work of telling far-end voices apart and this threw the answer away:
+    /// every unnamed voice rendered as the same flat `THEM`, on the panel, in
+    /// the JSONL log, and in the transcript the coach reads. Two people on a
+    /// call were indistinguishable in all three, so the separation could not be
+    /// used, could not be seen, and could not even be *checked* — which is why
+    /// the thresholds are still unvalidated.
+    ///
+    /// So the three states are now three different labels, and they mean
+    /// different things:
+    ///   - `THEM` — no cluster at all. Under `voiceid::MIN_SAMPLES` (1.5 s),
+    ///     or the model refused. "I could not tell", which is what the old
+    ///     label always said whether it was true or not.
+    ///   - `THEM 2` — cluster 2, no name yet. "A distinct voice I can follow."
+    ///   - `Priya` — cluster 2, named.
+    ///
+    /// The number is the book index, so a voice keeps it for as long as the
+    /// book does rather than being renumbered each call.
+    pub fn label(&self) -> String {
         match self {
-            Who::You => "YOU",
+            Who::You => "YOU".to_string(),
             Who::Them {
                 name: Some(name), ..
-            } => name,
-            Who::Them { .. } => "THEM",
+            } => name.clone(),
+            Who::Them {
+                voice: Some(v), ..
+            } => format!("THEM {}", v + 1),
+            Who::Them { .. } => "THEM".to_string(),
         }
     }
 
@@ -667,7 +690,7 @@ fn route(
                 last_them = text.clone();
             }
 
-            record(&log, &tx, who.label(), text);
+            record(&log, &tx, &who.label(), text);
             history.push(history::Turn::Speech {
                 who: who.clone(),
                 text: text.clone(),
@@ -1278,7 +1301,7 @@ fn main() -> Result<()> {
     ] {
         let (ctx, tx, tune) = (ctx.clone(), turn_tx.clone(), tune.clone());
         std::thread::spawn(move || {
-            let label = who.label().to_string(); // `who` is moved into run
+            let label = who.label(); // `who` is moved into run
             let input = audio::Input {
                 who,
                 dir,
@@ -1346,6 +1369,32 @@ fn main() -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+
+    /// `voiceid` separates far-end voices and every one of them used to render
+    /// as the same flat `THEM` — on the panel, in the log, and in the
+    /// transcript the coach reads. The separation existed and nothing could
+    /// see it, including anyone trying to check whether it worked.
+    ///
+    /// The three states must stay three labels: no cluster is not the same
+    /// claim as cluster 1, and collapsing them is what made an unvalidated
+    /// threshold unverifiable.
+    #[test]
+    fn an_unnamed_voice_is_still_a_distinct_speaker() {
+        let anon = |voice| Who::Them { voice, name: None };
+        assert_eq!(anon(Some(0)).label(), "THEM 1");
+        assert_eq!(anon(Some(1)).label(), "THEM 2");
+        assert_eq!(anon(None).label(), "THEM", "no cluster is 'I could not tell'");
+        assert_eq!(
+            Who::Them {
+                voice: Some(1),
+                name: Some("Priya".into()),
+            }
+            .label(),
+            "Priya",
+            "a name outranks the marker it replaces"
+        );
+        assert_eq!(Who::You.label(), "YOU");
+    }
 
     /// The cheap local half of not paying for nothing. `--min-words` alone let
     /// "yeah okay sure" through at exactly three words.
