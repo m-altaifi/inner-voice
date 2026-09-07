@@ -374,6 +374,30 @@ pub fn warm(state: &mut WhisperState) {
     let _ = state.full(params(""), &vec![0f32; RATE]); // output is not the point
 }
 
+/// Above this, whisper itself says the segment is not speech, and we drop it.
+///
+/// Whisper invents fluent boilerplate out of near-silence -- "Thanks for
+/// watching", "Please subscribe", subtitle credits -- and every one of those is
+/// three or more words, so it clears `--min-words`, becomes a real turn, enters
+/// the 24-turn history, is written to the JSONL log, and buys a paid provider
+/// request. Nothing downstream could tell it from speech, because as *text* it
+/// is not distinguishable from speech; the only place the difference still
+/// exists is the decoder, which scores it and was never asked.
+///
+/// Dropping it here rather than at `route`'s gate is what makes it free: an
+/// utterance whose segments all fail this leaves `transcribe` empty, and the
+/// existing `!text.is_empty()` check below already declines to send a turn at
+/// all. No new message, no new field, no new plumbing.
+///
+/// ponytail: UNVALIDATED on this machine's audio, and deliberately timid --
+/// OpenAI's reference uses 0.6, but only in conjunction with an average
+/// logprob test this does not do, so 0.6 alone would be the more aggressive
+/// setting rather than the same one. A dropped real turn is worse than a
+/// wasted request, so this errs at "near-certain silence" and nothing else.
+/// Tune it from `--dump` audio: a dropped utterance still writes its clip with
+/// empty text, so the clips folder already shows exactly what this rejected.
+const NO_SPEECH: f32 = 0.9;
+
 /// Returns the text rather than sending it: the caller also needs the speaker
 /// embedding, which is computed concurrently, and the turn cannot be stamped
 /// until both have landed.
@@ -384,13 +408,31 @@ fn transcribe(state: &mut WhisperState, audio: &[f32], tune: &Tune) -> Result<St
         .unwrap_or_else(|e| e.into_inner())
         .clone();
     state.full(params(&prompt), audio)?;
-    Ok(state
-        .as_iter()
-        .map(|s| s.to_string())
+    Ok(speech(
+        state
+            .as_iter()
+            .map(|s| (s.no_speech_probability(), s.to_string())),
+    ))
+}
+
+/// Join the segments whisper is confident were speech, and drop the rest.
+///
+/// A free function over `(no_speech_probability, text)` rather than a `filter`
+/// inside `transcribe`, for one reason: `transcribe` needs a `WhisperState` and
+/// a 574 MB model, so a filter written inline there can only be tested by
+/// something that owns both — and `tests/gpu_transcribes.rs`, the one test that
+/// does, calls whisper directly and never goes through this function at all.
+/// Inverting the threshold to `-1.0` left that test's transcript byte for byte
+/// identical, which is what proved it was no evidence. This seam is the whole
+/// difference between a guard and a guard nobody can check.
+fn speech(segments: impl Iterator<Item = (f32, String)>) -> String {
+    segments
+        .filter(|(no_speech, _)| *no_speech <= NO_SPEECH)
+        .map(|(_, text)| text)
         .collect::<Vec<_>>()
         .join(" ")
         .trim()
-        .to_string())
+        .to_string()
 }
 
 /// Hand a finished utterance to this stream's transcriber.
@@ -872,6 +914,52 @@ fn calibrated_gate(cal: &mut [f32]) -> f32 {
 
 #[cfg(test)]
 mod tests {
+    /// Whisper invents fluent boilerplate out of near-silence, and as *text* it
+    /// is indistinguishable from speech -- "Thanks for watching" is three words,
+    /// clears `--min-words`, enters the 24-turn history, is written to the log
+    /// and buys a paid provider request. The only place the difference still
+    /// exists is the decoder's own score, so this is where it has to be caught.
+    #[test]
+    fn whisper_boilerplate_scored_as_silence_never_becomes_a_turn() {
+        let hallucinated = vec![(0.97, "Thanks for watching!".to_string())];
+        assert_eq!(super::speech(hallucinated.into_iter()), "");
+
+        // Empty is the whole point: `run`'s `!text.is_empty()` check then
+        // declines to send a turn, so nothing reaches the log, the history or
+        // the coach. That is why this needs no new message or field.
+        let real = vec![(0.01, "we can ship on the eleventh".to_string())];
+        assert_eq!(
+            super::speech(real.into_iter()),
+            "we can ship on the eleventh"
+        );
+    }
+
+    /// A turn is usually several segments, and whisper scores each one. Dropping
+    /// the whole utterance because one segment was quiet would lose real speech;
+    /// keeping the whole utterance because one segment was loud would defeat the
+    /// filter. It is per segment, and the survivors are rejoined.
+    #[test]
+    fn one_dead_segment_does_not_take_the_rest_of_the_turn_with_it() {
+        let mixed = vec![
+            (0.02, "so the migration lands Tuesday".to_string()),
+            (0.99, "Thank you.".to_string()),
+            (0.03, "and we hold traffic until it does".to_string()),
+        ];
+        assert_eq!(
+            super::speech(mixed.into_iter()),
+            "so the migration lands Tuesday and we hold traffic until it does"
+        );
+    }
+
+    /// The threshold errs at near-certain silence on purpose: a dropped real
+    /// turn is worse than a wasted request, and this number is unvalidated on
+    /// real audio. Anything whisper is merely unsure about still gets through.
+    #[test]
+    fn an_unsure_segment_is_kept_rather_than_dropped() {
+        let unsure = vec![(0.6, "no, that number is wrong".to_string())];
+        assert_eq!(super::speech(unsure.into_iter()), "no, that number is wrong");
+    }
+
 
     fn tune_hearing(apps: &[&str]) -> Tune {
         Tune {
