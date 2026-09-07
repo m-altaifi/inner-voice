@@ -403,9 +403,6 @@ fn route(
     let mut last_them = String::new();
     // Which far-end voice spoke last, so `/who` has something to attach to.
     let mut last_voice: Option<usize> = None;
-    // Whether the user has said anything at all. One microphone turn is the
-    // difference between a conversation and a video playing.
-    let mut spoken = false;
     let mut advice = (0, String::new());
     // Whether a far-end turn asks the coach on its own. Off is the all-day
     // shape: an assistant left running through a working day would otherwise
@@ -487,7 +484,7 @@ fn route(
                 if let Some(coach) = &coach {
                     coach.ask(format!(
                         "{}{}\n\nUser question: {}{}",
-                        situation(&tune, spoken),
+                        situation(&tune, history.user_spoke()),
                         history.render(),
                         serde_json::json!(question),
                         references.retrieve(question)
@@ -570,20 +567,7 @@ fn route(
                 && let Some(v) = *voice
             {
                 last_voice = Some(v);
-                // Strongest first. A roster intro beats a free one because the
-                // spelling comes off a list a human wrote rather than out of
-                // whisper; a free intro beats being addressed because the
-                // speaker is talking about themselves. Being addressed only
-                // ever fills a blank, and never overrules either.
-                if let Some(n) = roster.self_intro(text) {
-                    bind(&mut names, v, n);
-                } else if let Some(n) = roster::introduced(text) {
-                    bind(&mut names, v, &n);
-                } else if let Some(n) = called.as_deref()
-                    && !names.contains_key(&v)
-                {
-                    bind(&mut names, v, n);
-                }
+                name_voice(&mut names, &roster, v, text, called.as_deref());
                 remember(&book, &tx, &names, v);
                 *name = names.get(&v).cloned();
             }
@@ -593,8 +577,6 @@ fn route(
             called = roster.addressed(text).map(str::to_string);
             if who.is_them() {
                 last_them = text.clone();
-            } else {
-                spoken = true;
             }
 
             record(&log, &tx, who.label(), text);
@@ -610,7 +592,7 @@ fn route(
             {
                 coach.ask(format!(
                     "{}{}{}",
-                    situation(&tune, spoken),
+                    situation(&tune, history.user_spoke()),
                     history.render(),
                     references.retrieve(text)
                 ));
@@ -618,6 +600,39 @@ fn route(
         }
         if tx.send(m).is_err() {
             return;
+        }
+    }
+}
+
+/// Attach a name to the voice that just spoke, by the strongest evidence in
+/// this turn — and only let the strongest *overwrite*.
+///
+/// A roster intro may: the spelling comes off a list a human wrote, so it is
+/// the correction rather than the error. A name merely heard may not, because
+/// the name it would replace was heard just as fallibly and is usually older
+/// evidence. One "I'm Ahmad" out of a noisy second would otherwise rename an
+/// Ahmed the book has been right about for months — permanently, and on every
+/// later call, since the binding is written through. Being addressed is weaker
+/// still. So both of those fill a blank and nothing more; `/who` is how a name
+/// gets corrected, and that is a human saying it on purpose.
+///
+/// Extracted from `route`'s loop because this is the code that can attribute a
+/// sentence to the wrong person, and inline in a `while let` over a channel it
+/// could not be tested at all.
+fn name_voice(
+    names: &mut HashMap<usize, String>,
+    roster: &roster::Roster,
+    voice: usize,
+    text: &str,
+    called: Option<&str>,
+) {
+    if let Some(n) = roster.self_intro(text) {
+        bind(names, voice, n);
+    } else if !names.contains_key(&voice) {
+        if let Some(n) = roster::introduced(text) {
+            bind(names, voice, &n);
+        } else if let Some(n) = called {
+            bind(names, voice, n);
         }
     }
 }
@@ -1222,6 +1237,177 @@ mod tests {
         let mut names = HashMap::from([(1, "Sarah".into()), (2, "Marcus".into())]);
         bind(&mut names, 2, "Sarah");
         assert!(names.is_empty());
+    }
+
+    /// Sequences a working day actually produces, run through the code that
+    /// decides who said what. Each of these is a scenario rather than a unit:
+    /// the two defects they were written for both needed *two* events to
+    /// appear, and no single-call test could have shown either.
+    mod scenarios {
+        use super::super::*;
+        // `hearing_tune` builds a `Tune` with a fixed selection; it lives in the
+        // parent test module beside the `/hear` tests that first needed it.
+        use super::hearing_tune;
+
+        fn roster(names: &[&str]) -> roster::Roster {
+            let dir = std::env::temp_dir().join(format!(
+                "iv_scn_{}_{}",
+                std::process::id(),
+                names.join("_")
+            ));
+            std::fs::create_dir_all(&dir).unwrap();
+            let mut csv = String::from("name,role\n");
+            for n in names {
+                csv.push_str(n);
+                csv.push_str(",Engineer\n");
+            }
+            std::fs::write(dir.join("attendees.csv"), csv).unwrap();
+            let r = roster::Roster::load(&dir);
+            let _ = std::fs::remove_dir_all(&dir);
+            r
+        }
+
+        fn empty() -> roster::Roster {
+            roster::Roster::load(std::path::Path::new("no-such-folder"))
+        }
+
+        fn turn(
+            names: &mut HashMap<usize, String>,
+            r: &roster::Roster,
+            voice: usize,
+            said: &str,
+        ) {
+            name_voice(names, r, voice, said, None);
+        }
+
+        /// A stranger with no roster at all — the ordinary case now that
+        /// `attendees.csv` is not required and it is different people every
+        /// time.
+        #[test]
+        fn an_unlisted_stranger_introduces_themselves_and_is_named() {
+            let mut names = HashMap::new();
+            turn(&mut names, &empty(), 0, "Hi, I'm Ahmed, I run platform.");
+            assert_eq!(names.get(&0).map(String::as_str), Some("Ahmed"));
+        }
+
+        /// **The defect this module was written for.** A name already known --
+        /// seeded from the voice book, or heard earlier -- must survive whisper
+        /// mishearing it later. The binding is written through to disk, so an
+        /// overwrite here is permanent and follows the person to every later
+        /// call.
+        #[test]
+        fn a_mishearing_never_renames_someone_already_known() {
+            let mut names = HashMap::from([(0, "Ahmed".to_string())]);
+            turn(&mut names, &empty(), 0, "I'm Ahmad and I think that is fine");
+            assert_eq!(
+                names.get(&0).map(String::as_str),
+                Some("Ahmed"),
+                "one noisy second renamed a person for good"
+            );
+
+            // The roster is the exception, and the reason for the exception:
+            // its spelling came off a list a human wrote, so it is the
+            // correction rather than another guess.
+            let mut names = HashMap::from([(0, "Ahmad".to_string())]);
+            turn(&mut names, &roster(&["Ahmed Bennani"]), 0, "I'm Ahmed");
+            assert_eq!(names.get(&0).map(String::as_str), Some("Ahmed Bennani"));
+        }
+
+        /// Being addressed is the weakest evidence and must not displace a name
+        /// the speaker gave for themselves. "Ahmed, what do you think?" is
+        /// usually said by *the other person*.
+        #[test]
+        fn being_addressed_fills_a_blank_but_never_overrules_an_introduction() {
+            let r = roster(&["Sara Osman"]);
+            let mut names = HashMap::new();
+            name_voice(&mut names, &r, 0, "yes exactly", Some("Sara Osman"));
+            assert_eq!(names.get(&0).map(String::as_str), Some("Sara Osman"));
+
+            let mut named = HashMap::from([(0, "Ahmed".to_string())]);
+            name_voice(&mut named, &r, 0, "yes exactly", Some("Sara Osman"));
+            assert_eq!(named.get(&0).map(String::as_str), Some("Ahmed"));
+        }
+
+        /// Two people on one speakerphone. The second must not inherit the
+        /// first's name, and a name claimed by two voices makes both anonymous
+        /// rather than picking one.
+        #[test]
+        fn two_far_end_voices_are_named_separately_and_a_clash_clears_both() {
+            let mut names = HashMap::new();
+            turn(&mut names, &empty(), 0, "I'm Ahmed");
+            turn(&mut names, &empty(), 1, "and I'm Sara");
+            assert_eq!(names.get(&0).map(String::as_str), Some("Ahmed"));
+            assert_eq!(names.get(&1).map(String::as_str), Some("Sara"));
+
+            // Voice 1 now claims to be Ahmed too. One of the two is wrong and
+            // nothing here can tell which, so neither keeps the name.
+            names.remove(&1);
+            turn(&mut names, &empty(), 1, "I'm Ahmed");
+            assert!(names.is_empty(), "{names:?}");
+        }
+
+        /// Ordinary speech must not enrol people. Every line here is one a real
+        /// meeting contains.
+        #[test]
+        fn a_meeting_full_of_ordinary_sentences_names_nobody() {
+            let mut names = HashMap::new();
+            let r = empty();
+            for said in [
+                "I'm not sure that number is right",
+                "I'm sorry, say that again?",
+                "This is the part I wanted to raise",
+                "I'm good with that",
+                "it's Tuesday next week",
+                "I'm Ahmed's manager, so it routes through me",
+            ] {
+                turn(&mut names, &r, 0, said);
+            }
+            assert!(names.is_empty(), "{names:?}");
+        }
+
+        /// A whole day in one test: a call in the morning, a video in the
+        /// afternoon. `spoken` used to be a flag set by the first microphone
+        /// turn and never cleared, so the video was described to the coach as a
+        /// conversation the user was taking part in — which is the exact fault
+        /// `situation` exists to prevent, coming back in the afternoon.
+        #[test]
+        fn a_video_after_a_call_is_not_still_a_conversation() {
+            let tune = hearing_tune(&["chrome"]);
+            let mut history = history::History::default();
+
+            // A fn, not a closure: a closure capturing `history` mutably would
+            // hold that borrow across every `user_spoke()` read below.
+            fn say(history: &mut history::History, who: Who, text: &str) {
+                history.push(history::Turn::Speech {
+                    who,
+                    text: text.to_string(),
+                });
+            }
+            fn them() -> Who {
+                Who::Them {
+                    voice: Some(0),
+                    name: None,
+                }
+            }
+
+            say(&mut history, them(), "so what is your rollback plan?");
+            assert!(
+                situation(&tune, history.user_spoke()).contains("has not spoken"),
+                "nobody has said anything yet"
+            );
+
+            say(&mut history, Who::You, "we cut traffic at the load balancer");
+            assert!(situation(&tune, history.user_spoke()).contains("taking part"));
+
+            // The call ends. A video plays all afternoon, and the window rolls.
+            for _ in 0..24 {
+                say(&mut history, them(), "and that is why the framework matters");
+            }
+            assert!(
+                situation(&tune, history.user_spoke()).contains("has not spoken"),
+                "the morning's call still counted in the afternoon"
+            );
+        }
     }
 
     /// Playing a YouTube video produced advice about "the interview": the

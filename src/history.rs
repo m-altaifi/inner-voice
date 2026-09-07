@@ -34,6 +34,21 @@ impl History {
             self.0.pop_front();
         }
     }
+    /// Whether the user has spoken inside the window the model is shown.
+    ///
+    /// Deliberately *not* a flag set on the first microphone turn. This panel
+    /// runs for a working day: a latch set during the morning's call is still
+    /// set in the afternoon, so a YouTube video would again be described to the
+    /// coach as a conversation the user is taking part in — the exact fault
+    /// `situation` exists to prevent, returning by the back door. Scoping it to
+    /// the retained turns makes it self-healing, and means the model is told
+    /// about the same window it can see.
+    pub fn user_spoke(&self) -> bool {
+        self.0
+            .iter()
+            .any(|t| matches!(t, Turn::Speech { who: Who::You, .. }))
+    }
+
     pub fn render(&self) -> String {
         self.0
             .iter()

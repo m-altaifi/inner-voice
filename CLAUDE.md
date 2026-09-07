@@ -438,7 +438,26 @@ the cached prompt prefix stays stable; do not change that ordering casually.
   mid-session — a stale situation line would be worse than none. `prompt.md`
   correspondingly no longer asserts "a live call"; it is told not to name a
   situation the transcript has not established, and to drop `SAY` entirely when
-  the user has not spoken, because there is nobody to say it to.
+  the user has not spoken, because there is nobody to say it to. **"Has the
+  user spoken" is a window, never a latch** (`History::user_spoke`): this panel
+  runs for a working day, so a flag set by the morning's call is still set in
+  the afternoon and a video is described as a conversation again. Scoping it to
+  the retained 24 turns makes it self-healing and tells the model about the
+  same window it is shown.
+
+- **Only the strongest evidence may overwrite a name** (`name_voice`). A roster
+  intro may, because its spelling came off a list a human wrote. A name merely
+  *heard* may not: the name it would replace was heard just as fallibly and is
+  usually older, and the binding is written through to `people.json`, so one
+  "I'm Ahmad" out of a noisy second renames an Ahmed permanently and on every
+  later call. Heard intros and being addressed fill a blank and nothing more;
+  `/who` is how a name is corrected, and that is a human saying it on purpose.
+  The precedence was extracted out of `route`'s channel loop for exactly one
+  reason: it is the code that can attribute a sentence to the wrong person, and
+  inline in a `while let` it could not be tested at all. `tests::scenarios`
+  holds the sequences — both of these defects needed *two* events to appear, so
+  no single-call test could have found either, and both new tests were checked
+  by mutation against the code they replaced.
 
 - **Text in a horizontal layout does not wrap.** egui hands children of a
   horizontal layout unbounded width, so the conversation strip's `YOU`/`THEM`
