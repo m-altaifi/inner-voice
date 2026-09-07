@@ -344,6 +344,17 @@ Traps here, each already paid for once (see LEDGER):
   and the entire reason `--speak` sounded robotic. Six better OneCore voices
   were installed all along in a category SAPI will not enumerate unless asked
   by id, which `speak::voices` does via `ISpObjectTokenCategory::SetId`.
+  **That is an improvement, not a solution, and the remaining ceiling is not in
+  the code.** Every OneCore voice is still concatenative and still sounds
+  synthetic; the neural ones are Windows 11's *natural* voices, a separate free
+  download. Measured on this machine before changing anything: SAPI's OneCore
+  category and WinRT `SpeechSynthesizer::AllVoices` enumerate the same six, so
+  moving to `Windows.Media.SpeechSynthesis` would gain nothing — there is
+  nothing extra for it to see. `setup::neural` reports the ceiling as its own
+  check rather than letting a user conclude the code is broken. If natural
+  voices are installed and still do not reach SAPI, *that* is when WinRT earns
+  its one `windows` crate feature, and only after that a neural ONNX voice
+  through the `ort` runtime already linked.
   Setting a token on `SpObjectToken` directly fails with `SPERR_NOT_FOUND`
   (0x80045041) — it must go through the category. Every failure here falls back
   to the default voice, never to silence.

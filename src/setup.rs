@@ -193,10 +193,11 @@ pub fn run(inputs: &Inputs, enumerator: &DeviceEnumerator) -> Vec<Check> {
                     inputs.voice.clone().unwrap_or_default(),
                     installed.join(", ")
                 ),
-                (None, true) => "no OneCore voices installed; --speak uses the SAPI default. Windows 11: Settings > Accessibility > Narrator > Add natural voices".into(),
+                (None, true) => NO_VOICES.into(),
             },
         }
     });
+    checks.push(neural(&speak::available()));
 
     checks.push(if extract::ocr_available() {
         Check {
@@ -242,6 +243,56 @@ pub fn run(inputs: &Inputs, enumerator: &DeviceEnumerator) -> Vec<Check> {
     });
 
     checks
+}
+
+/// Where Windows keeps the voices that do not sound like 1998.
+const ADD_VOICES: &str =
+    "Settings > Accessibility > Narrator > Narrator's voice > Add natural voices";
+
+const NO_VOICES: &str = "no OneCore voices installed; --speak uses the SAPI default";
+
+/// Whether any installed voice is *neural*, which is a different question from
+/// which one is selected — and the one a user is actually asking when they say
+/// the voice sounds robotic.
+///
+/// Moving off SAPI's default category to OneCore was a real improvement and is
+/// not the last one: every OneCore voice is still concatenative, the
+/// mobile-era generation, and still sounds synthetic. Windows 11's *natural*
+/// voices (Andrew, Ava, Aria, Guy, Jenny, Steffan) are neural, free, offline
+/// and a separate download, and nothing in this program can conjure them. So
+/// the check reports the ceiling rather than leaving a user to conclude the
+/// code is broken: verified on this machine, SAPI and WinRT's
+/// `SpeechSynthesizer::AllVoices` enumerate the same six, so switching API
+/// would gain nothing — installing a voice is the whole fix.
+///
+/// Windows names them "... (Natural)", which is the only marker either API
+/// exposes.
+fn neural(installed: &[String]) -> Check {
+    let natural: Vec<&String> = installed
+        .iter()
+        .filter(|d| d.to_lowercase().contains("natural"))
+        .collect();
+    Check {
+        name: "synthesis",
+        ok: true,
+        detail: match natural.first() {
+            Some(best) => format!("natural voices installed — try --voice {}", short(best)),
+            None => format!(
+                "every installed voice is concatenative and will sound synthetic. \
+                 Natural (neural) voices are free and offline: {ADD_VOICES}"
+            ),
+        },
+    }
+}
+
+/// "Microsoft Andrew (Natural) - English (United States)" -> "Andrew", which is
+/// what `--voice` actually wants.
+fn short(description: &str) -> &str {
+    description
+        .split_whitespace()
+        .nth(1)
+        .unwrap_or(description)
+        .trim_matches(|c: char| !c.is_alphanumeric())
 }
 
 /// Who the far end can be named as before anyone says anything.
