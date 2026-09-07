@@ -26,6 +26,7 @@ pub struct Inputs {
     pub loopback: Option<String>,
     pub knowledge: String,
     pub people: String,
+    pub voices: String,
     pub references: String,
     pub agent_cmd: Option<String>,
     pub voice: Option<String>,
@@ -47,6 +48,28 @@ pub fn run(inputs: &Inputs, enumerator: &DeviceEnumerator) -> Vec<Check> {
             detail: format!(
                 "{} missing — curl.exe -fL -o {} https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo-q5_0.bin",
                 inputs.whisper, inputs.whisper
+            ),
+        },
+    });
+
+    // The other model. It has a default path like whisper's, so a missing file
+    // means "not downloaded yet" rather than "not wanted" -- and unlike whisper
+    // its absence is silent: the call runs, the far end is simply never named,
+    // and the only sign is one notice line after startup. A new user following
+    // the README used to get that far without ever being told the file existed.
+    checks.push(match Path::new(&inputs.voices).metadata() {
+        Ok(m) => Check {
+            name: "speaker id",
+            ok: true,
+            detail: format!("{} ({} MB)", inputs.voices, m.len() / 1_000_000),
+        },
+        Err(_) => Check {
+            name: "speaker id",
+            ok: false,
+            detail: format!(
+                "{} missing — the far end is never named. \
+                 curl.exe -fL -o {} https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/3dspeaker_speech_campplus_sv_en_voxceleb_16k.onnx",
+                inputs.voices, inputs.voices
             ),
         },
     });
@@ -426,15 +449,23 @@ pub fn render(checks: &[Check]) -> String {
             c.detail
         );
     }
-    let failed = checks.iter().filter(|c| !c.ok).count();
-    if failed == 0 {
-        out.push_str("all checks passed.\n");
-    } else {
-        let _ = writeln!(
-            out,
-            "{failed} of {} checks failed; fix the ✗ lines above.",
-            checks.len()
-        );
+    let failed: Vec<&Check> = checks.iter().filter(|c| !c.ok).collect();
+    match failed.first() {
+        None => out.push_str("all checks passed.\n"),
+        // The first ✗, not a count. Checks run in dependency order -- no model,
+        // no CUDA timing; no provider, no advice -- so the earliest failure is
+        // the one worth doing next, and a new user with five ✗ lines needs one
+        // instruction rather than five.
+        Some(next) => {
+            let _ = writeln!(
+                out,
+                "{} of {} checks failed. Next: {} — {}",
+                failed.len(),
+                checks.len(),
+                next.name,
+                next.detail
+            );
+        }
     }
     out
 }
@@ -468,8 +499,13 @@ mod tests {
             lines[1],
             "  ✗ ocr         no Windows OCR language installed — add one"
         );
+        // The summary names the *first* ✗ and what to do about it: a new machine
+        // fails several checks at once, and "fix the ✗ lines above" is a wall
+        // rather than an instruction.
         assert!(
-            text.ends_with("1 of 3 checks failed; fix the ✗ lines above.\n"),
+            text.ends_with(
+                "1 of 3 checks failed. Next: ocr — no Windows OCR language installed — add one\n"
+            ),
             "{text:?}"
         );
         assert!(!all_ok(&checks));

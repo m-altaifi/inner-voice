@@ -14,26 +14,56 @@ you want it (`--manual`, `/coach on`).
 
 Requires Windows x64, an NVIDIA GPU/driver, CUDA, Rust, and Visual Studio C++
 build tools with CMake and Ninja. The panel is egui on OpenGL and shares the GPU
-with transcription; both run together on one card. Run from the project directory:
+with transcription; both run together on one card.
+
+Copy and paste the whole block. It builds, fetches both models, and creates
+`.env`:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\build.ps1 build --release
-# First setup only; preserve an existing .env:
-Copy-Item .env.example .env
-New-Item -ItemType Directory -Force models
+
+# First setup only -- this will not overwrite an existing .env:
+if (-not (Test-Path .env)) { Copy-Item .env.example .env }
+New-Item -ItemType Directory -Force models | Out-Null
+
+# Transcription (570 MB) and speaker recognition (29 MB). Both are needed:
+# without the second, the far end is never named.
 curl.exe -fL -o models/ggml-large-v3-turbo-q5_0.bin https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo-q5_0.bin
+curl.exe -fL -o models/campplus_sv_en_voxceleb_16k.onnx https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/3dspeaker_speech_campplus_sv_en_voxceleb_16k.onnx
+
 .\target\release\inner-voice.exe --setup
 ```
 
-`--setup` checks the model, CUDA (one warm-up inference, timed), your microphone
-and speakers, which apps are playing, the configured provider (one tiny request,
-with the time to first token — the same quantity the panel shows as `first word`
-— a live turn carries the pinned corpus and the last 24 turns, so expect it
-higher), Windows OCR, and the `knowledge/` and `references/` folders, printing ✓
-or ✗ with the fix next to each. Run it again after changing `.env`; compare
-providers by the number it prints. Exit code 1 means something is ✗.
+**Then do what `--setup` tells you.** It is the setup guide, not just a health
+check: every ✗ carries its own fix, and the last line names the single next
+thing to do rather than leaving you with a wall of them.
 
-Edit `.env` to select a provider and supply its key before enabling coaching.
+```
+2 of 14 checks failed. Next: provider — no GEMINI_API_KEY in the environment or .env
+```
+
+Two of those steps are yours to make and worth doing before the first real
+session:
+
+1. **A provider key.** Edit `.env`, choose `IV_PROVIDER` and paste the key.
+   Without one everything still runs — transcript, references, speaker names —
+   there is simply no advice. Re-run `--setup` after editing.
+2. **A voice that does not sound like a robot,** if you want `--speak`. Every
+   voice Windows ships with is concatenative. Install a neural one:
+   Settings > Accessibility > Narrator > Narrator's voice > **Add natural
+   voices** (Ava and Andrew are the best English ones; free, offline, ~100 MB).
+   `--setup`'s `synthesis` line tells you which state you are in and names the
+   voice back to you as a `--voice` argument.
+
+`--setup` checks both models, CUDA (one warm-up inference, timed), your
+microphone and speakers, which apps are playing, the configured provider (one
+tiny request, with the time to first token — the same quantity the panel shows
+as `first word`; a live turn carries the pinned corpus and the last 24 turns, so
+expect it higher), the installed voices, Windows OCR, the remembered speakers,
+what the corpus primes Whisper with, and the `knowledge/` and `references/`
+folders. Run it again after changing `.env`; compare providers by the number it
+prints. Exit code 1 means something is ✗.
+
 Flags override environment variables and `.env`. Use `--help` for all options.
 
 ### Running it

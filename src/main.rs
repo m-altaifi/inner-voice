@@ -854,6 +854,7 @@ fn main() -> Result<()> {
                 loopback: args.loopback.clone(),
                 knowledge: args.knowledge.clone(),
                 people: args.people.clone(),
+                voices: args.voices.clone(),
                 references: args.references.clone(),
                 agent_cmd: args.agent_cmd.as_ref().map(|p| p.display().to_string()),
                 voice: args.voice.clone(),
