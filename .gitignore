@@ -10,6 +10,9 @@ Everything.zip
 logs/
 .env
 models/*.onnx
+# Downloaded model bundles arrive as a folder, which `models/*.onnx`
+# does not reach -- it matches one level only.
+models/*/
 clips/
 references/
 # Your briefing material, not the project's. knowledge/README.md says why the

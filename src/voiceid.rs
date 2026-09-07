@@ -396,4 +396,89 @@ mod tests {
             "same speaker split into two clusters"
         );
     }
+
+    const SEG: &str = "models/sherpa-onnx-pyannote-segmentation-3-0/model.onnx";
+    /// The export's fixed window: 10 s at 16 kHz. See its embedded metadata.
+    const SEG_WINDOW: usize = 160_000;
+
+    /// Does a segmentation model fit the budget, and do the real dump clips
+    /// actually contain the overlapping speech that would explain the
+    /// over-splitting seen on this call?
+    ///
+    /// `assign` cannot answer either question: it is handed one embedding for a
+    /// whole utterance and has no way to know two people made it. This runs
+    /// pyannote-segmentation-3.0, whose seven outputs are the powerset of three
+    /// speakers — indices 4..6 are *pairs*, so overlap is read off the model
+    /// rather than inferred.
+    ///
+    /// Skips itself if either the model or a `--dump` clip is missing.
+    #[test]
+    fn segmentation_finds_overlap_and_fits_the_budget() {
+        use std::time::Instant;
+        if !Path::new(SEG).exists() {
+            eprintln!("skipping: {SEG} not downloaded");
+            return;
+        }
+        let clips: Vec<_> = std::fs::read_dir("clips")
+            .into_iter()
+            .flatten()
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| p.extension().is_some_and(|x| x == "wav"))
+            .filter_map(|p| Some((p.display().to_string(), wav(p.to_str()?)?)))
+            .collect();
+        if clips.is_empty() {
+            eprintln!("skipping: no clips/*.wav from --dump");
+            return;
+        }
+
+        let mut session = Session::builder()
+            .expect("builder")
+            .commit_from_file(SEG)
+            .expect("load segmentation model");
+
+        let mut worst = 0u128;
+        for (name, mut audio) in clips {
+            let secs = audio.len() as f32 / crate::audio::RATE as f32;
+            audio.resize(SEG_WINDOW.max(audio.len()), 0.0);
+            let frames_used = (secs * 16_000.0 / 270.0) as usize;
+
+            let t = Instant::now();
+            let x = ([1, 1, audio.len()], audio);
+            let out = session
+                .run(ort::inputs!["x" => ort::value::Tensor::from_array(x).expect("tensor")])
+                .expect("run");
+            let (shape, y) = out
+                .get("y")
+                .expect("output `y`")
+                .try_extract_tensor::<f32>()
+                .expect("extract");
+            let ms = t.elapsed().as_millis();
+            worst = worst.max(ms);
+
+            let classes = *shape.last().expect("rank") as usize;
+            assert_eq!(classes, 7, "powerset of 3 speakers, max 2 at once");
+            // Only the frames the clip actually covers; the rest is zero pad.
+            let mut seen = [0usize; 7];
+            for f in y.chunks(classes).take(frames_used) {
+                let (best, _) = f
+                    .iter()
+                    .enumerate()
+                    .max_by(|a, b| a.1.total_cmp(b.1))
+                    .expect("argmax");
+                seen[best] += 1;
+            }
+            let total: usize = seen.iter().sum::<usize>().max(1);
+            let overlap = seen[4..].iter().sum::<usize>();
+            let voices = (1..4).filter(|&i| seen[i] * 20 > total).count();
+            println!(
+                "{name:<34} {secs:>5.1}s  {ms:>4}ms  voices {voices}  overlap {:>4.1}%  {seen:?}",
+                100.0 * overlap as f32 / total as f32
+            );
+        }
+        // It rides the scoped thread beside CAM++ (54 ms) and whisper (~100 ms),
+        // so it is free only while it stays under them. A regression here is a
+        // regression in time to first word.
+        assert!(worst < 100, "segmentation cost {worst} ms, budget is whisper");
+    }
 }

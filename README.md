@@ -57,6 +57,23 @@ curl.exe -fL -o models/campplus_sv_en_voxceleb_16k.onnx https://github.com/k2-fs
 .\target\release\inner-voice.exe --setup
 ```
 
+**Optional, diagnostic only (6 MB).** `pyannote-segmentation-3.0` answers a
+question `campplus` structurally cannot: how many people are speaking inside a
+single utterance, and where two of them overlap. Nothing in the running app
+uses it yet — it backs one test, which is how the overlap question gets
+evidence instead of argument. Download it, capture a call with `--dump`, then:
+
+```powershell
+curl.exe -fL -o seg.tar.bz2 https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-segmentation-models/sherpa-onnx-pyannote-segmentation-3-0.tar.bz2
+tar -xf seg.tar.bz2 -C models; Remove-Item seg.tar.bz2
+
+$env:RUST_TEST_NOCAPTURE=1; .\build.ps1 test --release segmentation_finds_overlap
+```
+
+It prints one line per clip in `clips/`: length, inference cost, how many
+voices it heard, and what share of frames hold two people at once. The test
+skips itself if either the model or the clips are missing.
+
 **Then do what `--setup` tells you.** It is the setup guide, not just a health
 check: every ✗ carries its own fix, and the last line names the single next
 thing to do rather than leaving you with a wall of them.
