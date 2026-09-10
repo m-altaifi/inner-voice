@@ -20,7 +20,7 @@ uncommitted work. Stacked PRs target their immediate dependency. Statuses are
 | M05 | `05-retrieval`: revisions and contextual recall | M04 | in_review | nine store/retrieval tests pass; scope and 4 KB limits verified | [PR 5](https://github.com/m-altaifi/inner-voice/pull/5) |
 | M06 | `06-awareness`: working memory and open items | M05 | in_review | full release suite passes; 3,602-second paced run passes with rotation and store reopen | [PR 6](https://github.com/m-altaifi/inner-voice/pull/6) |
 | M07 | `07-controls`: inspect and correct memory | M06 | in_review | 174 unit + 2 integration tests; GUI smoke and all four preview panes pass | [PR 7](https://github.com/m-altaifi/inner-voice/pull/7) |
-| M08 | `08-validation`: retention and release evidence | M07 | in_progress | 184 unit + 2 integration tests; 100k replay p95 4.56 ms; paced hour, restart and release checks pass | [validation report](../validation/2026-09-10-memory.md); PR pending |
+| M08 | `08-validation`: retention and release evidence | M07 | in_review | 184 unit + 2 integration tests; 100k replay p95 4.56 ms; paced hour, restart and release checks pass | [PR 8](https://github.com/m-altaifi/inner-voice/pull/8), [validation report](../validation/2026-09-10-memory.md) |
 
 ## Implementation contract
 
@@ -56,7 +56,7 @@ uncommitted work. Stacked PRs target their immediate dependency. Statuses are
 - [x] Check formatting, Clippy, diff whitespace and build.
 - [x] Run preview checks for routing/pane changes.
 - [x] Record actual results and limitations in this ledger and the PR body.
-- [ ] Push a reviewable branch and open its dependent PR; do not merge.
+- [x] Push a reviewable branch and open its dependent PR; do not merge.
 
 Final evaluation separates infrastructure success from decision quality. Cover
 malformed provider output, disputed owners, speaker ambiguity, cross-project
