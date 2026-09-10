@@ -6,14 +6,19 @@
 //! a key to see what was just said is the same mid-sentence interruption as
 //! reaching for the mouse. Only the things you consult *deliberately*
 //! (references, diagnostics, research, the key list) take over the main pane.
-use crate::{Msg, references::References, speak::Speaker};
+use crate::{
+    Msg,
+    config::{self, Apply, Kind},
+    references::References,
+    speak::Speaker,
+};
 use crossbeam_channel::{Receiver, Sender, unbounded};
 use eframe::egui::{
     self, Color32, FontId, Key, RichText, ScrollArea, TextEdit, TextStyle, ViewportCommand,
 };
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use std::{
-    collections::VecDeque,
+    collections::{BTreeMap, VecDeque},
     path::PathBuf,
     sync::{
         Arc,
@@ -26,7 +31,7 @@ use windows::Win32::{
     UI::{
         Input::KeyboardAndMouse::{
             GetAsyncKeyState, MOD_CONTROL, MOD_NOREPEAT, MOD_SHIFT, RegisterHotKey,
-            SetActiveWindow, VK_F1, VK_F2, VK_F3, VK_F4, VK_F5, VK_F6, VK_LBUTTON,
+            SetActiveWindow, VK_F1, VK_F2, VK_F3, VK_F4, VK_F5, VK_F6, VK_F7, VK_LBUTTON,
         },
         Shell::{DragAcceptFiles, DragFinish, DragQueryFileW, HDROP},
         WindowsAndMessaging::{
@@ -59,6 +64,8 @@ const MINIMIZE: usize = 111;
 const CLOSE: usize = 112;
 const HELP: usize = 113;
 const PIN: usize = 114;
+const RECALL: usize = 116;
+const CONFIG: usize = 117;
 
 /// Turns of conversation kept on screen above the advice, at minimum.
 ///
@@ -158,16 +165,20 @@ fn status_text(
 /// action was removed, and `every_action_is_reachable_by_exactly_one_key`
 /// holds the line that none may lose both.
 ///
-/// F7..F12 are deliberately left unregistered. `RegisterHotKey` is
-/// first-come process-wide, so six rows we do not need were six combinations
-/// taken from every other app on the machine.
-const KEYS: [(u32, usize, &str); 6] = [
+/// F8..F12 are deliberately left unregistered. `RegisterHotKey` is
+/// first-come process-wide, so rows we do not need would be combinations taken
+/// from every other app on the machine. F7 is the one exception the "six not
+/// twelve" cut was later given: the Config pane is the one pane worth reaching
+/// without first typing, and it is the only action that keeps both a key and a
+/// command (see `every_action_is_reachable_by_exactly_one_key`).
+const KEYS: [(u32, usize, &str); 7] = [
     (VK_F1.0 as u32, ADVICE, "Back to advice"),
     (VK_F2.0 as u32, ASK, "Ask, or type a / command"),
     (VK_F3.0 as u32, COACH, "Advice: armed / on request only"),
     (VK_F4.0 as u32, PAUSE, "Pause / resume listening"),
     (VK_F5.0 as u32, MINIMIZE, "Hide / show the panel"),
     (VK_F6.0 as u32, HELP, "This list"),
+    (VK_F7.0 as u32, CONFIG, "Configuration"),
 ];
 
 /// A command the panel runs itself needs no `id`; `FORWARD` marks the ones
@@ -182,8 +193,22 @@ const FORWARD: usize = 0;
 /// This table is the dispatcher as well as the help text. A command used to be
 /// an `if text == ...` arm that only the help table knew about, which is two
 /// places to forget; now adding one is a row.
-const COMMANDS: [(&str, usize, &str); 13] = [
-    ("/sources", SOURCES, "pick which apps are heard, from a list"),
+const COMMANDS: [(&str, usize, &str); 15] = [
+    (
+        "/config",
+        CONFIG,
+        "view and edit configuration; changes save to .env",
+    ),
+    (
+        "/recall <topic>",
+        FORWARD,
+        "recall earlier speech with its source and time",
+    ),
+    (
+        "/sources",
+        SOURCES,
+        "pick which apps are heard, from a list",
+    ),
     ("/who", FORWARD, "who the panel can put a name to"),
     (
         "/who <name>",
@@ -236,6 +261,10 @@ pub struct Session {
     /// so the pane opens it on this thread when it needs the app list — the
     /// same rule every capture thread follows.
     pub loopback: String,
+    /// The `.env` the Config pane writes edits back to — the file dotenvy loaded
+    /// at startup. `None` when no `.env` was found (persistence off, pane
+    /// read-only) so an edit never scatters a fresh `.env` in an arbitrary cwd.
+    pub env_path: Option<PathBuf>,
 }
 
 /// What a drag on the window chrome should do.
@@ -428,6 +457,19 @@ struct State {
     question: String,
     focus_question: bool,
     view: usize,
+    /// Config pane edit state. `edit_field` is the `env` of the row being typed
+    /// into (or `config::KEY_SENTINEL` for the API key); `edit_buf` is its
+    /// working text and `focus_field` pulls the caret into it next frame. These
+    /// are a *second* text surface, separate from the question box, so a typed
+    /// setting never rides through `question` — which the state dump mirrors
+    /// verbatim. `edits` overlays committed values over the process env so the
+    /// pane shows what was just typed (restart-only settings are not re-read
+    /// live), and `restart_pending` drives the per-row "restart to apply" mark.
+    edit_field: Option<&'static str>,
+    edit_buf: String,
+    focus_field: bool,
+    edits: BTreeMap<&'static str, String>,
+    restart_pending: Vec<&'static str>,
     paused: bool,
     /// Apps on the loopback device, as (name, playing now). Refreshed only while
     /// the Sources pane is open — enumerating WASAPI sessions every frame would
@@ -438,9 +480,13 @@ struct State {
     /// `route`, mirrored here for the status line only.
     coaching: bool,
     seq: u64,
+    /// The visible answer survives completion; `seq` does not.
+    displayed_seq: u64,
+    retired_seq: u64,
     thinking: bool,
     advice: String,
     research: String,
+    recall: String,
     researching: bool,
     research_id: u64,
     transcript: VecDeque<(String, String)>,
@@ -484,11 +530,14 @@ impl State {
             }
         }
     }
-    /// Let the panel take the keyboard, remembering who had it.
+    /// Take the keyboard, remembering who had it — without deciding which field
+    /// gets the caret. Typing is the one thing a hotkey cannot do for you, so
+    /// this is the only moment the panel is allowed to become foreground.
     ///
-    /// Typing is the one thing a hotkey cannot do for you, so this is the only
-    /// moment the panel is allowed to become the foreground window.
-    fn borrow_keyboard(&mut self) {
+    /// Split out because the question box and the Config pane's fields both need
+    /// the grab but focus different widgets: `borrow_keyboard` for the question
+    /// box, a `focus_field` set by the caller for a config row.
+    fn grab_keyboard(&mut self) {
         self.typing = true;
         self.keep_unfocusable();
         unsafe {
@@ -499,6 +548,9 @@ impl State {
             let _ = SetForegroundWindow(self.hwnd);
             let _ = SetActiveWindow(self.hwnd);
         }
+    }
+    fn borrow_keyboard(&mut self) {
+        self.grab_keyboard();
         self.focus_question = true;
     }
     /// Give the keyboard back to whoever had it, and stop activating again.
@@ -516,10 +568,53 @@ impl State {
             let Ok(message) = self.rx.try_recv() else {
                 break;
             };
+            if matches!(&message, Msg::AdviceStart(id)|Msg::Advice(id,_)|Msg::AdviceEnd(id)|Msg::AdviceQuiet(id)|Msg::AdviceFailed(id,_) if *id != 0 && *id <= self.retired_seq)
+            {
+                continue;
+            }
             match message {
-                Msg::Turn(who, text) => {
-                    remember(&mut self.transcript, (who.label(), text))
+                Msg::AdviceRetired(id) => {
+                    self.retired_seq = self.retired_seq.max(id);
+                    if self.displayed_seq <= id {
+                        self.advice.clear();
+                        if self.seq == u64::MAX {
+                            self.asked_at = None;
+                            self.first_word_at = None;
+                        }
+                    }
+                    if self.seq <= id {
+                        self.thinking = false;
+                        self.seq = u64::MAX;
+                        self.asked_at = None;
+                        self.first_word_at = None;
+                    }
                 }
+                Msg::AdviceFailed(id, reason) if id == self.seq => {
+                    self.advice.clear();
+                    self.thinking = false;
+                    self.seq = u64::MAX;
+                    self.retired_seq = self.retired_seq.max(id);
+                    self.asked_at = None;
+                    self.first_word_at = None;
+                    self.notice = format!("coach: {reason}");
+                    remember(&mut self.diagnostics, self.notice.clone());
+                }
+                Msg::Recall(text) => {
+                    self.recall = text;
+                    self.view = RECALL;
+                    self.notice = "Earlier speech; verify it against newer decisions. Ctrl+Shift+F1 returns to advice.".into();
+                }
+                Msg::ContextReset => {
+                    self.advice.clear();
+                    self.thinking = false;
+                    self.seq = u64::MAX;
+                    self.asked_at = None;
+                    self.first_word_at = None;
+                    self.research.clear();
+                    self.researching = false;
+                    self.research_id = u64::MAX;
+                }
+                Msg::Turn(who, text) => remember(&mut self.transcript, (who.label(), text)),
                 Msg::Sys(text) => {
                     if text.contains("failed")
                         || text.contains("stopped")
@@ -530,6 +625,9 @@ impl State {
                         || text.starts_with("speak:")
                         || text.starts_with("naming:")
                         || text.starts_with("knowledge")
+                        || text.starts_with("session:")
+                        || text.starts_with("memory:")
+                        || text.starts_with("audio overload:")
                     {
                         self.notice = text.clone();
                     }
@@ -558,6 +656,7 @@ impl State {
                     self.first_word_at = None;
                 }
                 Msg::Advice(id, text) if id == self.seq => {
+                    self.displayed_seq = id;
                     if self.thinking {
                         self.advice.clear();
                         self.thinking = false;
@@ -575,11 +674,16 @@ impl State {
                     self.thinking = false;
                     self.seq = u64::MAX;
                     if finished
+                        && !self.advice.trim().is_empty()
                         && !self.paused
                         && let Some(speaker) = &self.speaker
                     {
                         speaker.say(&self.advice);
                     }
+                }
+                Msg::AdviceQuiet(id) if id == self.seq => {
+                    self.advice.clear();
+                    self.thinking = false;
                 }
                 Msg::ToolStart(id) => {
                     self.research_id = id;
@@ -605,7 +709,15 @@ impl State {
     }
     fn command(&mut self, id: usize, ctx: &egui::Context) {
         match id {
-            ADVICE | TRANSCRIPT | REFERENCES | DIAGNOSTICS | HELP | SOURCES => self.view = id,
+            ADVICE | TRANSCRIPT | REFERENCES | DIAGNOSTICS | HELP | SOURCES | CONFIG => {
+                // Switching panes (F1 back to advice, say) abandons a half-typed
+                // config field and hands the keyboard back, or `prior` is left
+                // unrestored and the call app never gets it back.
+                if self.edit_field.take().is_some() {
+                    self.return_keyboard();
+                }
+                self.view = id;
+            }
             MINIMIZE => {
                 let hidden = ctx.input(|i| i.viewport().minimized.unwrap_or(false));
                 ctx.send_viewport_cmd(ViewportCommand::Minimized(!hidden));
@@ -615,6 +727,7 @@ impl State {
             PAUSE => {
                 self.paused = !self.paused;
                 self.session.epoch.fetch_add(1, Ordering::SeqCst);
+                self.advice.clear();
                 self.seq = u64::MAX;
                 self.thinking = false;
                 self.asked_at = None;
@@ -717,7 +830,10 @@ impl State {
         );
         ui.add_space(8.0);
         if ui
-            .selectable_label(selected.is_empty(), RichText::new("Whole speaker mix").size(16.0))
+            .selectable_label(
+                selected.is_empty(),
+                RichText::new("Whole speaker mix").size(16.0),
+            )
             .clicked()
         {
             tune.hear_only(Vec::new());
@@ -729,7 +845,9 @@ impl State {
                 true => RichText::new(&name).size(16.0),
                 // Selected but silent: it was named before it started, or it
                 // stopped. The stream is still waiting for it either way.
-                false => RichText::new(format!("{name}  — not playing")).size(16.0).color(MUTED),
+                false => RichText::new(format!("{name}  — not playing"))
+                    .size(16.0)
+                    .color(MUTED),
             };
             if ui.selectable_label(matches(&name), label).clicked() {
                 let now = tune.toggle(&name);
@@ -746,9 +864,7 @@ impl State {
             );
         }
         ui.add_space(10.0);
-        ui.label(
-            RichText::new(format!("Listening on {}", self.session.loopback)).color(MUTED),
-        );
+        ui.label(RichText::new(format!("Listening on {}", self.session.loopback)).color(MUTED));
     }
 
     /// Enumerate at most once a second, and only while the pane is open.
@@ -778,6 +894,280 @@ impl State {
             }
         }
         self.sources = rows;
+    }
+
+    /// The Config pane: view and edit every `IV_*` setting, grouped by section.
+    ///
+    /// Like `sources_pane`, it works without stealing the keyboard for a mouse
+    /// click — a `WS_EX_NOACTIVATE` window still gets mouse input, so toggling a
+    /// bool or picking an enum needs no focus. Only *typing* a value borrows the
+    /// keyboard, through the same path the question box uses, and hands it back
+    /// on commit or cancel. Every edit persists to `.env`; the three live-capable
+    /// settings apply at once, the rest show "restart to apply".
+    fn config_pane(&mut self, ui: &mut egui::Ui) {
+        let editable = self.session.env_path.is_some();
+        if !editable {
+            ui.label(
+                RichText::new("No .env loaded — settings are read-only and cannot be saved.")
+                    .color(AMBER),
+            );
+        } else {
+            ui.label(
+                RichText::new("Click a value to change it. Enter saves; Esc cancels. Changes save to .env.")
+                    .color(MUTED),
+            );
+        }
+        ui.add_space(8.0);
+        let mut section = "";
+        for field in config::FIELDS {
+            if field.section != section {
+                section = field.section;
+                ui.add_space(8.0);
+                ui.label(RichText::new(section).color(ACCENT).strong());
+            }
+            self.config_row(ui, field, editable);
+        }
+    }
+
+    /// One row of the Config pane. Bool/Enum commit from a click; Text, Number,
+    /// Gate and the API key are typed into an in-pane field — never the question
+    /// box, so a value (a key especially) never rides through `question`, which
+    /// the state dump mirrors verbatim.
+    fn config_row(&mut self, ui: &mut egui::Ui, field: &config::Field, editable: bool) {
+        match field.kind {
+            Kind::Bool => {
+                let on = self.config_bool(field.env);
+                let mark = self.restart_mark(field.env);
+                let label = format!("{}: {}{}", field.label, if on { "on" } else { "off" }, mark);
+                if ui.selectable_label(on, label).clicked() && editable {
+                    self.commit_field(field, (!on).to_string());
+                }
+            }
+            Kind::Enum(variants) => {
+                let current = self.config_value(field.env);
+                let mut chosen: Option<&str> = None;
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(RichText::new(format!("{}:", field.label)).color(MUTED));
+                    for v in variants {
+                        if ui.selectable_label(current == *v, *v).clicked() && editable {
+                            chosen = Some(*v);
+                        }
+                    }
+                });
+                if let Some(v) = chosen {
+                    self.commit_field(field, v.to_string());
+                }
+            }
+            Kind::Secret => self.config_key_row(ui, field, editable),
+            Kind::Text | Kind::Number { .. } | Kind::Gate => {
+                if self.edit_field == Some(field.env) {
+                    let resp = ui.add(
+                        TextEdit::singleline(&mut self.edit_buf)
+                            .desired_width(360.0)
+                            .hint_text(field.label),
+                    );
+                    if std::mem::take(&mut self.focus_field) {
+                        resp.request_focus();
+                    }
+                    if resp.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) {
+                        let raw = self.edit_buf.clone();
+                        match config::validate(&field.kind, &raw) {
+                            Ok(v) => {
+                                self.edit_field = None;
+                                self.commit_field(field, v);
+                                self.return_keyboard();
+                            }
+                            // Keep the field open so the value can be fixed.
+                            Err(e) => {
+                                self.notice = format!("{}: {e}", field.label);
+                                self.focus_field = true;
+                            }
+                        }
+                    }
+                } else {
+                    let val = self.config_value(field.env);
+                    let shown = if val.is_empty() { "(unset)".to_string() } else { val };
+                    let mark = self.restart_mark(field.env);
+                    let label = format!("{}: {}{}", field.label, shown, mark);
+                    if ui.selectable_label(false, label).clicked() && editable {
+                        self.edit_field = Some(field.env);
+                        self.edit_buf = self.config_value(field.env);
+                        self.grab_keyboard();
+                        self.focus_field = true;
+                    }
+                }
+            }
+        }
+    }
+
+    /// The API key row. Its target var follows the selected provider
+    /// (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, …); `none` has no key. The value
+    /// is never shown, never pre-filled into the edit box, and never written to
+    /// the state dump — only "set"/"not set" and, after a save, a restart mark.
+    fn config_key_row(&mut self, ui: &mut egui::Ui, field: &config::Field, editable: bool) {
+        let provider = self.config_value("IV_PROVIDER");
+        let Some(var) = crate::provider::key_var(&provider) else {
+            ui.label(
+                RichText::new(format!("{}: not used by provider \"{provider}\"", field.label))
+                    .color(MUTED),
+            );
+            return;
+        };
+        if self.edit_field == Some(config::KEY_SENTINEL) {
+            let resp = ui.add(
+                TextEdit::singleline(&mut self.edit_buf)
+                    .password(true)
+                    .desired_width(360.0)
+                    .hint_text(format!("paste {var}, Enter saves")),
+            );
+            if std::mem::take(&mut self.focus_field) {
+                resp.request_focus();
+            }
+            if resp.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) {
+                let value = self.edit_buf.trim().to_string();
+                self.edit_buf.clear();
+                self.edit_field = None;
+                if !value.is_empty() {
+                    if let Some(path) = self.session.env_path.clone() {
+                        match config::upsert_env(&path, var, &value) {
+                            Ok(_) => {
+                                if !self.restart_pending.contains(&var) {
+                                    self.restart_pending.push(var);
+                                }
+                                self.notice = format!("{var} updated — restart to apply");
+                            }
+                            Err(e) => self.notice = format!("couldn't save {var}: {e}"),
+                        }
+                    }
+                }
+                self.return_keyboard();
+            }
+        } else {
+            let set = std::env::var(var)
+                .ok()
+                .is_some_and(|k| !k.trim().is_empty());
+            let mark = if self.restart_pending.contains(&var) {
+                "   • restart to apply"
+            } else {
+                ""
+            };
+            let label = format!(
+                "{} ({var}): {}{}",
+                field.label,
+                if set { "set" } else { "not set" },
+                mark
+            );
+            if ui.selectable_label(false, label).clicked() && editable {
+                self.edit_field = Some(config::KEY_SENTINEL);
+                self.edit_buf.clear();
+                self.grab_keyboard();
+                self.focus_field = true;
+            }
+        }
+    }
+
+    /// The value a row shows: live state for the three live settings (which are
+    /// authoritative for those), the edits overlay then the process env for the
+    /// rest. `IV_PROVIDER` falls back to its clap default so the key row can
+    /// resolve a var even when `.env` never set it.
+    fn config_value(&self, env: &str) -> String {
+        match env {
+            "IV_HEAR" => {
+                return self
+                    .session
+                    .tune
+                    .as_ref()
+                    .map(|t| t.hearing().join(", "))
+                    .unwrap_or_default();
+            }
+            "IV_ALPHA" => return ((self.alpha * 255.0).round() as u32).to_string(),
+            "IV_PROVIDER" => {
+                return self
+                    .edits
+                    .get("IV_PROVIDER")
+                    .cloned()
+                    .or_else(|| std::env::var("IV_PROVIDER").ok())
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or_else(|| "anthropic".into());
+            }
+            _ => {}
+        }
+        self.edits
+            .get(env)
+            .cloned()
+            .or_else(|| std::env::var(env).ok())
+            .unwrap_or_default()
+    }
+
+    /// The "restart to apply" tail for a row whose edit is persisted but not
+    /// yet live (the `Apply::Restart` settings).
+    fn restart_mark(&self, env: &str) -> &'static str {
+        if self.restart_pending.iter().any(|e| *e == env) {
+            "   • restart to apply"
+        } else {
+            ""
+        }
+    }
+    /// A bool setting's current state. "Coaching armed" is the live `!manual`,
+    /// mirrored on `self.coaching`; the rest parse their stored string.
+    fn config_bool(&self, env: &str) -> bool {
+        if env == "IV_MANUAL" {
+            return self.coaching;
+        }
+        matches!(
+            self.config_value(env).trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "on"
+        )
+    }
+
+    /// Persist an edit to `.env` and apply it: live for the three that can
+    /// change without a restart, a "restart to apply" mark for the rest.
+    /// `IV_MANUAL` is stored inverted — the row is "Coaching armed" = `!manual`.
+    fn commit_field(&mut self, field: &config::Field, value: String) {
+        let persist_val = if field.env == "IV_MANUAL" {
+            // value is the armed bool; the flag on disk is manual = !armed.
+            (value != "true").to_string()
+        } else {
+            value.clone()
+        };
+        self.edits.insert(field.env, value.clone());
+        if let Some(path) = self.session.env_path.clone() {
+            if let Err(e) = config::upsert_env(&path, field.env, &persist_val) {
+                self.notice = format!("couldn't save {}: {e}", field.env);
+                return;
+            }
+        }
+        match (field.apply, field.env) {
+            (Apply::Live, "IV_HEAR") => {
+                if let Some(t) = &self.session.tune {
+                    t.hear_only(crate::audio::parse_hear(&value));
+                }
+                self.notice = if value.trim().is_empty() {
+                    "hearing: the whole speaker mix".into()
+                } else {
+                    format!("hearing: {value}")
+                };
+            }
+            (Apply::Live, "IV_MANUAL") => {
+                let armed = value == "true";
+                self.coaching = armed;
+                let _ = self.tx.send(Msg::Coaching(armed));
+                self.notice = if armed { "coaching armed" } else { "coaching muted" }.into();
+            }
+            (Apply::Live, "IV_ALPHA") => {
+                if let Ok(n) = value.parse::<f32>() {
+                    self.alpha = (n / 255.0).clamp(0.0, 1.0);
+                }
+                self.notice = format!("opacity {value}");
+            }
+            (Apply::Restart, _) => {
+                if !self.restart_pending.contains(&field.env) {
+                    self.restart_pending.push(field.env);
+                }
+                self.notice = format!("{} saved — restart to apply", field.label);
+            }
+            _ => {}
+        }
     }
 
     fn status_line(&self) -> String {
@@ -878,6 +1268,7 @@ impl State {
                     ui.label(RichText::new(joined(&self.imports)).color(MUTED));
                 }
                 SOURCES => self.sources_pane(ui),
+                CONFIG => self.config_pane(ui),
                 DIAGNOSTICS => {
                     ui.label(RichText::new(joined(&self.diagnostics)).color(MUTED));
                 }
@@ -916,6 +1307,7 @@ impl State {
                     };
                     ui.label(RichText::new(text).color(FG));
                 }
+                RECALL => { ui.label(RichText::new(&self.recall).color(FG)); }
                 _ if self.advice.is_empty() => {
                     let mode = if self.session.online {
                         "Advice appears after the other person speaks. Drop reference files anywhere on this window."
@@ -1044,6 +1436,10 @@ impl State {
                 serde_json::json!({ "name": n, "playing": live })
             }).collect::<Vec<_>>(),
             "hearing": self.session.tune.as_ref().map(|t| t.hearing()).unwrap_or_default(),
+            // The config field being edited, by *name* only. Never a value: the
+            // edit buffer holds typed settings incl. the API key, and this file
+            // is world-readable. `edit_buf` and `edits` are deliberately absent.
+            "config_field": self.edit_field.unwrap_or(""),
         })
         .to_string();
         if *last != now {
@@ -1112,7 +1508,13 @@ impl eframe::App for State {
         // that floats over a live call, so it only backs out of the question
         // box and hands the keyboard back; Alt+F4 closes.
         if ctx.input(|i| i.key_pressed(Key::Escape)) {
-            self.question.clear();
+            // In a config field, Escape abandons that edit (the buffer, key
+            // included, is dropped); otherwise it backs out of the question box.
+            if self.edit_field.take().is_some() {
+                self.edit_buf.clear();
+            } else {
+                self.question.clear();
+            }
             self.return_keyboard();
         }
 
@@ -1273,6 +1675,11 @@ pub fn run(
                 question: String::new(),
                 focus_question: false,
                 view: ADVICE,
+                edit_field: None,
+                edit_buf: String::new(),
+                focus_field: false,
+                edits: BTreeMap::new(),
+                restart_pending: Vec::new(),
                 paused: false,
                 sources: Vec::new(),
                 sources_read: None,
@@ -1281,9 +1688,12 @@ pub fn run(
                 // in the direction that would make a muted coach look broken.
                 coaching: true,
                 seq: 0,
+                displayed_seq: 0,
+                retired_seq: 0,
                 thinking: false,
                 advice: String::new(),
                 research: String::new(),
+                recall: String::new(),
                 researching: false,
                 research_id: 0,
                 transcript: VecDeque::new(),
@@ -1358,6 +1768,151 @@ fn paint_style(ctx: &egui::Context) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn message_panel() -> (State, Sender<Msg>) {
+        let (tx, rx) = crossbeam_channel::unbounded();
+        let state = State {
+            rx,
+            tx: tx.clone(),
+            hotkeys: crossbeam_channel::never(),
+            drops: crossbeam_channel::never(),
+            session: Session {
+                preview: true,
+                research_enabled: false,
+                online: false,
+                model: None,
+                references: References::new(tx.clone(), None),
+                epoch: Arc::new(AtomicU64::new(0)),
+                tune: None,
+                loopback: String::new(),
+                env_path: None,
+            },
+            speaker: None,
+            hwnd: HWND::default(),
+            prior: None,
+            typing: false,
+            pinned: false,
+            drag: None,
+            launched: Instant::now(),
+            asked_at: None,
+            first_word_at: None,
+            alpha: 1.0,
+            notice: String::new(),
+            question: String::new(),
+            focus_question: false,
+            view: ADVICE,
+            edit_field: None,
+            edit_buf: String::new(),
+            focus_field: false,
+            edits: BTreeMap::new(),
+            restart_pending: Vec::new(),
+            paused: false,
+            sources: Vec::new(),
+            sources_read: None,
+            coaching: true,
+            seq: 0,
+            displayed_seq: 0,
+            retired_seq: 0,
+            thinking: false,
+            advice: String::new(),
+            research: String::new(),
+            recall: String::new(),
+            researching: false,
+            research_id: 0,
+            transcript: VecDeque::new(),
+            diagnostics: VecDeque::new(),
+            imports: VecDeque::new(),
+            pending: Vec::new(),
+            dump: None,
+        };
+        (state, tx)
+    }
+
+    /// The one commit rule easy to get backwards: the row reads "Coaching
+    /// armed", but the flag on disk is `IV_MANUAL` = *not* armed, and `route`
+    /// has to be told live or the running session and `.env` disagree.
+    #[test]
+    fn coaching_toggle_persists_inverted_and_applies_live() {
+        let (mut panel, _tx) = message_panel();
+        let mut path = std::env::temp_dir();
+        path.push(format!(
+            "iv-hud-test-{}.env",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::write(&path, "").unwrap();
+        panel.session.env_path = Some(path.clone());
+        panel.coaching = true;
+
+        let field = config::FIELDS.iter().find(|f| f.env == "IV_MANUAL").unwrap();
+        // Committing "false" (not armed) mutes coaching.
+        panel.commit_field(field, "false".to_string());
+
+        assert!(!panel.coaching, "coaching should be muted");
+        let env = std::fs::read_to_string(&path).unwrap();
+        assert!(env.contains("IV_MANUAL=true"), "manual flag not inverted: {env}");
+        assert!(
+            matches!(panel.rx.try_recv(), Ok(Msg::Coaching(false))),
+            "route was not told to mute"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn completed_advice_is_cleared_when_retired_without_erasing_a_newer_answer() {
+        let (mut panel, tx) = message_panel();
+        for message in [
+            Msg::AdviceStart(1),
+            Msg::Advice(1, "old".into()),
+            Msg::AdviceEnd(1),
+        ] {
+            tx.send(message).unwrap();
+        }
+        panel.pump();
+        assert_eq!(panel.advice, "old");
+        tx.send(Msg::AdviceRetired(1)).unwrap();
+        panel.pump();
+        assert!(panel.advice.is_empty());
+        for message in [
+            Msg::AdviceStart(2),
+            Msg::Advice(2, "new".into()),
+            Msg::AdviceEnd(2),
+            Msg::AdviceRetired(1),
+        ] {
+            tx.send(message).unwrap();
+        }
+        panel.pump();
+        assert_eq!(panel.advice, "new");
+        tx.send(Msg::AdviceStart(3)).unwrap();
+        tx.send(Msg::AdviceRetired(2)).unwrap();
+        panel.pump();
+        assert!(panel.advice.is_empty());
+        assert!(panel.thinking);
+        assert!(panel.asked_at.is_some());
+    }
+
+    #[test]
+    fn failed_advice_clears_partial_output_and_rejects_late_messages() {
+        let (mut panel, tx) = message_panel();
+        for message in [
+            Msg::AdviceStart(1),
+            Msg::Advice(1, "partial".into()),
+            Msg::AdviceFailed(1, "stream interrupted".into()),
+            Msg::AdviceEnd(1),
+            Msg::AdviceStart(1),
+            Msg::Advice(1, "late".into()),
+            Msg::AdviceEnd(1),
+        ] {
+            tx.send(message).unwrap();
+        }
+        panel.pump();
+        assert!(panel.advice.is_empty());
+        assert!(!panel.thinking);
+        assert!(panel.notice.contains("stream interrupted"));
+        assert!(panel.asked_at.is_none());
+    }
     #[test]
     fn the_whole_panel_is_a_grip_until_it_is_pinned() {
         use egui::ResizeDirection as R;
@@ -1460,8 +2015,10 @@ mod tests {
         // literal in prose is unreachable from `fkey` and moves with nothing.
         // Anything user-facing should name the *command* -- `/research` does
         // not renumber when a key does.
-        for (where_, text) in [("README", readme), (".env.example", include_str!("../.env.example"))]
-        {
+        for (where_, text) in [
+            ("README", readme),
+            (".env.example", include_str!("../.env.example")),
+        ] {
             for line in text.lines() {
                 // The one line that may name them says they are free.
                 if line.contains("free for every other app") {
@@ -1521,13 +2078,19 @@ mod tests {
             (CLEAR, "clear"),
             (DIAGNOSTICS, "diagnostics"),
             (SOURCES, "sources"),
+            (CONFIG, "config"),
         ] {
             assert!(
                 ids.contains(&id) || typed.contains(&id),
                 "{name} has neither a key nor a command"
             );
+            // Config is the one action given both, on purpose: it is the pane
+            // most worth reaching without first typing, and typing `/config` is
+            // still there for when the hotkey is taken by another app. Every
+            // other action stays XOR — a stray second route is a lie about which
+            // one is real.
             assert!(
-                !(ids.contains(&id) && typed.contains(&id)),
+                id == CONFIG || !(ids.contains(&id) && typed.contains(&id)),
                 "{name} has both a key and a command; one of them is the lie"
             );
         }
@@ -1544,7 +2107,10 @@ mod tests {
         for (name, id, _) in COMMANDS {
             assert!(name.starts_with('/'), "{name} is not a command");
             assert!(
-                id != FORWARD || ["/hear", "/who"].iter().any(|p| name.starts_with(p)),
+                id != FORWARD
+                    || ["/hear", "/who", "/recall"]
+                        .iter()
+                        .any(|p| name.starts_with(p)),
                 "{name} forwards to a router that does not handle it"
             );
         }
@@ -1606,7 +2172,15 @@ mod tests {
             "Listening · transcription only"
         );
         assert_eq!(
-            status_text(Mode::Paused, Wait::Thinking(9.0), None, false, false, false, true),
+            status_text(
+                Mode::Paused,
+                Wait::Thinking(9.0),
+                None,
+                false,
+                false,
+                false,
+                true
+            ),
             "Paused — audio is not being transcribed · thinking 9.0s"
         );
     }

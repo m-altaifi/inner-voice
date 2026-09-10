@@ -113,17 +113,17 @@ if ($clicked) {
 
 # The app owns its hotkeys for real: registration is first-come process-wide,
 # so a combination it holds must be refused to everyone else.
-foreach ($vk in 0x70, 0x71, 0x75) {          # Ctrl+Shift+F1, F2, F6
+foreach ($vk in 0x70, 0x71, 0x75, 0x76) {    # Ctrl+Shift+F1, F2, F6, F7 (Config)
     if ([PreviewNative]::RegisterHotKey([IntPtr]::Zero, 900 + $vk, 0x0002 -bor 0x0004, $vk)) {
         [void][PreviewNative]::UnregisterHotKey([IntPtr]::Zero, 900 + $vk)
         throw "Panel does not actually own Ctrl+Shift+F$($vk - 0x6F)"
     }
 }
 
-# ...and gave the other six back. Registration is first-come process-wide, so
-# a key the panel no longer needs is a key it must no longer be holding from
-# every other app on the machine -- which is half the point of the cut.
-foreach ($vk in 0x76, 0x77, 0x78, 0x79, 0x7A, 0x7B) {   # F7..F12
+# ...and left the rest free. Registration is first-come process-wide, so a key
+# the panel does not need is a key it must not be holding from every other app
+# on the machine. F7 is now the Config pane; F8..F12 stay free.
+foreach ($vk in 0x77, 0x78, 0x79, 0x7A, 0x7B) {   # F8..F12
     if ([PreviewNative]::RegisterHotKey([IntPtr]::Zero, 900 + $vk, 0x0002 -bor 0x0004, $vk)) {
         [void][PreviewNative]::UnregisterHotKey([IntPtr]::Zero, 900 + $vk)
     } else {
@@ -146,6 +146,15 @@ Capture-Window 'preview-keys.png'
 Press 101
 if ((Read-State).view -ne 101) { throw 'Hotkey did not return to advice' }
 Capture-Window 'preview-advice.png'
+
+# The configuration pane opens on its own key (F7 = 117) and, alone among the
+# panes, also on /config. Under --preview no .env is loaded, so it is read-only;
+# that it opens and renders (not the advice fall-through) is the check.
+Press 117
+if ((Read-State).view -ne 117) { throw 'Hotkey did not open the config pane' }
+Capture-Window 'preview-config.png'
+Press 101
+if ((Read-State).view -ne 101) { throw 'Config pane did not return to advice' }
 
 # Pause must not disturb the panel; under --preview the status line reports
 # preview first, so this checks the toggle survives rather than its wording.

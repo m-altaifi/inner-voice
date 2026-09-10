@@ -1,0 +1,47 @@
+{
+  "clean": {
+    "clips": 12,
+    "raw_edits": 30,
+    "raw_words": 313,
+    "raw_wer": 0.09584664536741214,
+    "normalized_edits": 0,
+    "normalized_words": 304,
+    "normalized_wer": 0.0
+  },
+  "10dB_white_noise": {
+    "clips": 12,
+    "raw_edits": 31,
+    "raw_words": 313,
+    "raw_wer": 0.09904153354632587,
+    "normalized_edits": 3,
+    "normalized_words": 304,
+    "normalized_wer": 0.009868421052631578
+  },
+  "stress": {
+    "decodes": 1009,
+    "audio_minutes": 222.35808333333327,
+    "wall_seconds": 120.2367604,
+    "empty": 0,
+    "raw_wer": 0.09040127678978568,
+    "lane_p95_ms": [
+      273,
+      279
+    ]
+  },
+  "memory_sampling": {
+    "samples": 62,
+    "peak_working_set_mib": 509.8203125,
+    "peak_private_mib": 2898.875,
+    "after_30s_private_growth_mib": 2.6484375
+  },
+  "recall": {
+    "correct": 999,
+    "hourly_rotations": 138,
+    "recall_checks": 999,
+    "recall_p95_us": 250,
+    "retained_records": 20000,
+    "simulated_hours": 138.88888888888889,
+    "turns": 100000,
+    "wall_seconds": 0.4305337
+  }
+}

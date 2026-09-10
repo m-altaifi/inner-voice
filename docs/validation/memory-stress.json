@@ -1,0 +1,10 @@
+{
+  "correct": 999,
+  "hourly_rotations": 138,
+  "recall_checks": 999,
+  "recall_p95_us": 250,
+  "retained_records": 20000,
+  "simulated_hours": 138.88888888888889,
+  "turns": 100000,
+  "wall_seconds": 0.4305337
+}

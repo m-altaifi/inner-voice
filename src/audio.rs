@@ -7,7 +7,7 @@
 
 use crate::{Msg, Who};
 use anyhow::Result;
-use crossbeam_channel::{Sender, unbounded};
+use crossbeam_channel::{Receiver, Sender, TrySendError, bounded};
 use std::collections::VecDeque;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -414,7 +414,7 @@ const NO_SPEECH: f32 = 0.9;
 /// Returns the text rather than sending it: the caller also needs the speaker
 /// embedding, which is computed concurrently, and the turn cannot be stamped
 /// until both have landed.
-fn transcribe(state: &mut WhisperState, audio: &[f32], tune: &Tune) -> Result<String> {
+pub(crate) fn transcribe(state: &mut WhisperState, audio: &[f32], tune: &Tune) -> Result<String> {
     let prompt = tune
         .prompt
         .read()
@@ -450,13 +450,42 @@ fn speech(segments: impl Iterator<Item = (f32, String)>) -> String {
 
 /// Hand a finished utterance to this stream's transcriber.
 ///
-/// The queue is unbounded on purpose: whisper decodes an order of magnitude
-/// faster than speech arrives, so it cannot grow during a conversation, and
-/// bounding it could only be enforced by dropping audio — which is the exact
-/// failure moving transcription off the capture thread was meant to remove.
-fn send(tx: &Sender<(u64, Vec<f32>)>, epoch: u64, utt: Vec<f32>) -> Result<()> {
-    tx.send((epoch, utt))
-        .map_err(|_| anyhow::anyhow!("transcriber stopped"))
+/// Bounded backlog: preserve the newest audio under overload without blocking
+/// capture. Returns whether old audio was discarded, so loss is never silent.
+const MAX_AUDIO_AGE: Duration = Duration::from_secs(8);
+
+struct QueuedAudio {
+    epoch: u64,
+    queued: Instant,
+    samples: Vec<f32>,
+}
+
+fn expired_audio(queued: Instant, now: Instant) -> bool {
+    now.saturating_duration_since(queued) >= MAX_AUDIO_AGE
+}
+
+fn send(
+    tx: &Sender<QueuedAudio>,
+    pending: &Receiver<QueuedAudio>,
+    epoch: u64,
+    utt: Vec<f32>,
+) -> Result<bool> {
+    let mut item = QueuedAudio {
+        epoch,
+        queued: Instant::now(),
+        samples: utt,
+    };
+    let mut dropped = false;
+    loop {
+        match tx.try_send(item) {
+            Ok(()) => return Ok(dropped),
+            Err(TrySendError::Disconnected(_)) => anyhow::bail!("transcriber stopped"),
+            Err(TrySendError::Full(returned)) => {
+                item = returned;
+                dropped |= pending.try_recv().is_ok();
+            }
+        }
+    }
 }
 
 /// One capture stream, start to finish. `dir` being `Render` is what makes this
@@ -535,7 +564,8 @@ struct Feed<'a> {
     label: &'a str,
     tx: &'a Sender<Msg>,
     tune: &'a Arc<Tune>,
-    utt_tx: &'a Sender<(u64, Vec<f32>)>,
+    utt_tx: &'a Sender<QueuedAudio>,
+    pending: &'a Receiver<QueuedAudio>,
     gate_override: Option<f32>,
     mute: Option<&'a Arc<AtomicBool>>,
 }
@@ -572,7 +602,8 @@ pub fn run(input: Input, ctx: Arc<WhisperContext>, tx: Sender<Msg>, tune: Arc<Tu
     // `who` moves to the worker, which is what stamps each turn; the capture
     // loop keeps only the display label for its own status messages.
     let label = who.label();
-    let (utt_tx, utt_rx) = unbounded::<(u64, Vec<f32>)>();
+    let (utt_tx, utt_rx) = bounded::<QueuedAudio>(4);
+    let pending = utt_rx.clone();
     {
         let (ctx, tx, tune) = (ctx.clone(), tx.clone(), tune.clone());
         let label = label.clone();
@@ -602,8 +633,29 @@ pub fn run(input: Input, ctx: Arc<WhisperContext>, tx: Sender<Msg>, tune: Arc<Tu
                 _ => None,
             };
 
-            while let Ok((epoch, utt)) = utt_rx.recv() {
+            let mut warned: Option<Instant> = None;
+            let mut report_stale = || {
+                if warned.is_none_or(|t| t.elapsed() >= Duration::from_secs(10)) {
+                    warned = Some(Instant::now());
+                    let _=tx.send(Msg::Sys(format!("audio overload: {label} discarded audio delayed over 8 seconds; use a faster model or fewer sources")));
+                }
+            };
+            while let Ok(QueuedAudio {
+                epoch,
+                queued,
+                samples: utt,
+            }) = utt_rx.recv()
+            {
                 if epoch % 2 != 0 || tune.epoch.load(Ordering::SeqCst) != epoch {
+                    continue;
+                }
+                if expired_audio(queued, Instant::now()) {
+                    report_stale();
+                    if let Some(dir) = &tune.dump
+                        && let Err(e) = save(dir, &label, &utt, "")
+                    {
+                        let _ = tx.send(Msg::Sys(format!("dump: {e}")));
+                    }
                     continue;
                 }
                 // Whisper is on the GPU, the embedding on the CPU, and neither
@@ -640,6 +692,10 @@ pub fn run(input: Input, ctx: Arc<WhisperContext>, tx: Sender<Msg>, tune: Arc<Tu
                         let _ = tx.send(Msg::Sys(format!("dump: {e}")));
                     }
                 }
+                if expired_audio(queued, Instant::now()) {
+                    report_stale();
+                    continue;
+                }
                 if !text.is_empty() && tx.send(Msg::Turn(turn, text)).is_err() {
                     return;
                 }
@@ -652,6 +708,7 @@ pub fn run(input: Input, ctx: Arc<WhisperContext>, tx: Sender<Msg>, tune: Arc<Tu
         tx: &tx,
         tune: &tune,
         utt_tx: &utt_tx,
+        pending: &pending,
         gate_override,
         mute: mute.as_ref(),
     };
@@ -718,7 +775,9 @@ pub fn run(input: Input, ctx: Arc<WhisperContext>, tx: Sender<Msg>, tune: Arc<Tu
             for app in &wanted {
                 scope.spawn(move || {
                     if let Err(e) = hear_app(app, device, dir, feed, app_feed, solo, generation) {
-                        let _ = feed.tx.send(Msg::Sys(format!("hearing: {app} stopped: {e}")));
+                        let _ = feed
+                            .tx
+                            .send(Msg::Sys(format!("hearing: {app} stopped: {e}")));
                     }
                 });
             }
@@ -821,6 +880,7 @@ fn pump(stream: &Stream, feed: &Feed, still_there: &mut dyn FnMut() -> bool) -> 
         tx,
         tune,
         utt_tx,
+        pending,
         gate_override,
         mute,
     } = feed;
@@ -835,6 +895,16 @@ fn pump(stream: &Stream, feed: &Feed, still_there: &mut dyn FnMut() -> bool) -> 
     let calibrating_since = Instant::now();
     let mut checked = Instant::now();
     let mut previous_epoch = tune.epoch.load(Ordering::SeqCst);
+    let mut overload_notice: Option<Instant> = None;
+    let mut enqueue = |epoch, utt| -> Result<()> {
+        if send(utt_tx, pending, epoch, utt)?
+            && overload_notice.is_none_or(|t| t.elapsed() >= Duration::from_secs(10))
+        {
+            overload_notice = Some(Instant::now());
+            tx.send(Msg::Sys(format!("audio overload: {label} dropped old queued audio to keep up; reduce sources or use a faster transcription model")))?;
+        }
+        Ok(())
+    };
 
     loop {
         if checked.elapsed() >= Duration::from_secs(2) {
@@ -874,7 +944,7 @@ fn pump(stream: &Stream, feed: &Feed, still_there: &mut dyn FnMut() -> bool) -> 
                 last = Instant::now();
                 frame.fill(0.0);
                 if let Some(utt) = seg.push(&frame) {
-                    send(utt_tx, epoch, utt)?;
+                    enqueue(epoch, utt)?;
                 }
             }
             std::thread::sleep(Duration::from_millis(5));
@@ -910,7 +980,7 @@ fn pump(stream: &Stream, feed: &Feed, still_there: &mut dyn FnMut() -> bool) -> 
                 frame.fill(0.0); // the AI is talking; don't hear ourselves
             }
             if let Some(utt) = seg.push(&frame) {
-                send(utt_tx, epoch, utt)?;
+                enqueue(epoch, utt)?;
             }
         }
     }
@@ -927,6 +997,33 @@ fn calibrated_gate(cal: &mut [f32]) -> f32 {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn delayed_audio_expires_at_the_boundary_and_fresh_audio_survives() {
+        let queued = std::time::Instant::now();
+        assert!(!super::expired_audio(
+            queued,
+            queued + std::time::Duration::from_millis(7999)
+        ));
+        assert!(super::expired_audio(
+            queued,
+            queued + std::time::Duration::from_secs(8)
+        ));
+        assert!(super::expired_audio(
+            queued,
+            queued + std::time::Duration::from_secs(120)
+        ));
+    }
+    #[test]
+    fn overload_keeps_the_newest_audio_and_never_blocks_capture() {
+        let (tx, rx) = crossbeam_channel::bounded(4);
+        for i in 0..100_000 {
+            let dropped = super::send(&tx, &rx, 0, vec![i as f32]).unwrap();
+            assert_eq!(dropped, i >= 4);
+            assert!(rx.len() <= 4);
+        }
+        let kept: Vec<_> = rx.try_iter().map(|a| a.samples[0] as usize).collect();
+        assert_eq!(kept, vec![99_996, 99_997, 99_998, 99_999]);
+    }
     /// Whisper invents fluent boilerplate out of near-silence, and as *text* it
     /// is indistinguishable from speech -- "Thanks for watching" is three words,
     /// clears `--min-words`, enters the 24-turn history, is written to the log
@@ -970,9 +1067,11 @@ mod tests {
     #[test]
     fn an_unsure_segment_is_kept_rather_than_dropped() {
         let unsure = vec![(0.6, "no, that number is wrong".to_string())];
-        assert_eq!(super::speech(unsure.into_iter()), "no, that number is wrong");
+        assert_eq!(
+            super::speech(unsure.into_iter()),
+            "no, that number is wrong"
+        );
     }
-
 
     fn tune_hearing(apps: &[&str]) -> Tune {
         Tune {

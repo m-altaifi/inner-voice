@@ -74,6 +74,13 @@ fn preset(name: &str) -> Result<(&'static str, Option<&'static str>, &'static st
     })
 }
 
+/// Which key env var a provider reads, for the Config pane's key field. `None`
+/// for `none` (no coach, no key) and for an unknown name — reuses `preset` so
+/// the mapping never drifts from the one `resolve` actually uses.
+pub(crate) fn key_var(name: &str) -> Option<&'static str> {
+    preset(name).ok().map(|(_, _, env, _)| env)
+}
+
 /// `model` is required where published model ids move fast enough that a
 /// hardcoded default would silently 404. Better a clear error than a dead panel
 /// mid-call.

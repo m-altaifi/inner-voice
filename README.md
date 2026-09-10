@@ -177,6 +177,53 @@ here or leave it empty. `--setup` prints the first terms Whisper will be primed
 with, which is the fastest way to see what the folder is about to do. The latest 24 speech/research turns form the
 coaching context; JSONL retains speech, completed advice, and research results.
 
+The live context starts fresh every hour using a monotonic timer. The current
+24-turn window, prior advice and pending research are retired at that boundary;
+capture and the transcript continue. Earlier speech remains available through
+local recall. This rotation costs no provider tokens.
+
+Recall indexes up to 20,000 recent speech excerpts locally. At startup it reads
+at most 32 MB from up to 200 recent transcript logs. Each excerpt is capped at
+1,200 bytes, with a truncation marker. Before advice or research, matching
+earlier excerpts are selected by word overlap and supplied with their source,
+speaker and time: at most four excerpts and about 4 KB per request. Generated
+advice and research are excluded from this memory. Earlier claims remain
+unverified; newer corrections take precedence. This is lexical retrieval and
+does not guarantee finding paraphrases or material outside the bounded index.
+
+`/recall <topic>` opens those excerpts locally in a separate pane without a
+provider request or speech playback. Use a project name and topic, such as
+`/recall Orion runway`. Ctrl+Shift+F1 returns to advice. With `IV_LOG=` disabled,
+recall lasts only for the current process; it creates no second private store.
+Selected historical excerpts may go to the configured provider during online
+advice or research, just like current transcript context.
+
+The coach now prefers silence for settled issues, routine updates and repeated
+advice. `SILENT` clears the advice without showing or speaking a placeholder.
+Short consequential answers still qualify for advice even below `--min-words`.
+These rules reduce interruption; they do not certify the model's judgment or
+mathematics. Multistep calculations should prompt verification rather than an
+unverified numerical correction.
+
+Typed questions (Ctrl+Shift+F2) explicitly request an answer and take priority
+over automatic coaching until they finish. If the model returns silence, the
+panel reports an unanswered request. New meaningful speech retires automatic
+advice immediately. Failed streams clear partial output before completion, so
+it is not logged as completed advice or submitted to speech playback.
+
+Live advice has an eight-second network timeout; requests queued for eight
+seconds expire before they are sent. These are separate limits, not an
+eight-second end-to-end guarantee. Research keeps its longer timeout. There
+are no added automatic retries or provider switches. Under overload, audio
+waiting or processing for eight seconds after an utterance ends is discarded
+with a notice; such turns do not enter the transcript or recall. `--dump`
+retains clips rejected by this age check. Slow CPU inference may need a
+smaller model to stay within that budget. The queue also evicts its oldest
+utterance when all four slots fill.
+
+Fault tests and the configured-provider check are recorded in
+[the reliability report](docs/validation/2026-09-07-reliability.md).
+
 ## Controls and research
 
 The borderless panel is one page: a status line, the advice, the conversation,
@@ -198,6 +245,7 @@ There are six keys. Learning them is the whole interface.
 | Ctrl+Shift+F4 | Pause / resume listening |
 | Ctrl+Shift+F5 | Hide / show the panel |
 | Ctrl+Shift+F6 | This list |
+| Ctrl+Shift+F7 | Configuration |
 
 Everything else is typed into the question box after Ctrl+Shift+F2. You do not
 need any of it on the first day.
@@ -206,6 +254,7 @@ need any of it on the first day.
 | --- | --- |
 | `/sources` | pick which apps are heard, from a list |
 | `/who` | who the panel can put a name to |
+| `/recall <topic>` | recall earlier speech with its source and time |
 | `/who <name>` | name the voice that just spoke; remembered on the next call |
 | `/hear` | report which apps are heard as THEM |
 | `/hear <app>[,<app>]` | hear only these; an app not yet running is waited for |
@@ -217,6 +266,7 @@ need any of it on the first day.
 | `/pin` | pin the panel where it is |
 | `/clear` | clear references |
 | `/diagnostics` | the diagnostics log |
+| `/config` | view and edit configuration; changes save to .env |
 
 Ctrl+Shift+F6 shows both lists inside the panel. `/research` works whenever a
 coaching provider is online or `--agent-cmd` is set. Ctrl+Shift+F2 puts the
@@ -226,10 +276,22 @@ anything. Quit has no hotkey on purpose: Alt+F4 closes the window.
 It was twelve keys. Each was defensible alone and the set was not: a panel whose
 claim is *don't make me look away* had a key list you had to look away to read.
 Nothing was removed — the seven that left became commands, and
-Ctrl+Shift+F7 to F12 are now free for every other app on the machine.
+Ctrl+Shift+F8 to F12 are now free for every other app on the machine.
+Ctrl+Shift+F7 opens Configuration; it is the one pane worth reaching without
+first typing, so it keeps a key *and* a `/config` command.
 
 The panel's own commands take effect the moment you press Enter and hand the
 keyboard straight back to your call app.
+
+**`/config` (Ctrl+Shift+F7) shows and edits every setting.** Click a value to
+change it — bools and the provider toggle on a click; text, numbers, gates and
+the API key are typed in place (Enter saves, Escape cancels). Every change is
+written back to your `.env`, so it survives a restart. Three of them apply
+immediately — the apps heard as THEM, coaching armed/muted, and panel opacity;
+the rest (provider, model, key, devices, gates, folders…) are read once at
+launch, so the pane marks them *restart to apply*. The API key field follows the
+selected provider, shows only *set* / *not set*, and its value never touches the
+diagnostics dump. With no `.env` loaded the pane is read-only.
 
 Hotkeys are process-wide and first come, first served. If another app already
 owns one of these combinations, registration fails; the panel then names the lost
@@ -513,3 +575,22 @@ Remove-Item Env:\IV_LIVE_TEST
 
 A real call is needed to assess recognition and speaker accuracy. The prerecorded
 GPU check proves runtime operation, not conversational accuracy.
+
+The measured scientific/executive evaluation and its failures are recorded in
+[`docs/validation/2026-09-07-stress.md`](docs/validation/2026-09-07-stress.md).
+The opt-in tests below use synthetic fixtures only and never read private briefs:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File tools/make-evaluation-audio.ps1
+.\build.ps1 test --release --offline --no-run
+pwsh -NoProfile -File tools/run-audio-stress.ps1 -Seconds 120
+.\build.ps1 test --release --offline stress_memory_sessions -- --ignored --nocapture
+py -3 tools/summarize-evaluation.py
+# Paid: six synthetic requests to IV_PROVIDER / IV_MODEL; no provider fallback.
+.\build.ps1 test --release --offline evaluate_decisions -- --ignored --nocapture
+```
+
+Audio capture now keeps at most four queued utterances per transcription worker.
+If inference falls behind, the oldest queued audio is discarded and an overload
+notice appears. This bounds backlog while preserving recent audio; discarded
+audio is lost. It does not remove the latency of an inference already running.
