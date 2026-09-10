@@ -7,6 +7,18 @@ Update the **Now** block after every work session. Nothing else here is chronolo
 
 ## Now
 
+**Memory architecture (2026-09-10):** implementation proceeds through the
+[task ledger](docs/plans/brain-inspired-memory-ledger.md). Private GitHub
+repository created; ledger and preserved-foundation PRs are open. The current
+foundation passed 158 unit tests and two integration tests. SQLite knowledge
+storage adds evidence fingerprints, atomic extraction, correction history,
+restart-persistent request budgets and source-linked retention. Six focused
+storage tests pass. Background learning and UI integration follow separately.
+
+This extends Decision 6: JSONL remains episode evidence; a derived SQLite store
+supports transactional knowledge revisions. It follows the transcript logging
+opt-out and does not import historical logs automatically.
+
 **Reliability follow-up (2026-09-07):** typed questions have explicit answer
 intent and priority over later speech. Silent model responses become visible
 failures on this path. Advice uses an eight-second HTTP limit and expires jobs
