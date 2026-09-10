@@ -52,6 +52,15 @@ pub enum Msg {
     AdviceRetired(u64),
     ContextReset,
     Recall(String),
+    MemoryPanel {
+        title: String,
+        text: String,
+    },
+    LearningStatus {
+        enabled: bool,
+        brief: String,
+        detail: String,
+    },
     Research,
     CancelResearch,
     Question(String),
@@ -175,6 +184,10 @@ struct Args {
     /// Offline UI preview: no audio capture, model loading, or online requests
     #[arg(long)]
     preview: bool,
+
+    /// Open a synthetic memory pane in preview (no capture, persistence or network).
+    #[arg(long, requires = "preview")]
+    preview_command: Option<String>,
 
     /// Override the auto-calibrated mic VAD threshold
     #[arg(long, env = "IV_MIC_GATE", value_parser = parse_gate)]
@@ -649,6 +662,11 @@ fn route(
             }
             Msg::Question(question) => {
                 owed = None;
+                if let Some(learning) = &learning
+                    && learning.command(question, &awareness, &session_source)
+                {
+                    continue;
+                }
                 if question == "/recall" || question.starts_with("/recall ") {
                     let query = question.strip_prefix("/recall").unwrap_or("").trim();
                     let answer = memory.recall(query, u64::MAX);
@@ -1269,10 +1287,20 @@ fn main() -> Result<()> {
                 .into(),
         ));
         let local_references = references.clone();
+        if let Some(command) = &args.preview_command {
+            let (title, text) = learning::preview_command(command).context(
+                "preview-command must be /memory, /awareness, /commitments or /learning",
+            )?;
+            let _ = tx.send(Msg::MemoryPanel { title, text });
+        }
         std::thread::spawn(move || {
             while let Ok(message) = input.recv() {
                 if let Msg::Question(question) = message {
-                    local_answer(&tx, &local_references, &question);
+                    if let Some((title, text)) = learning::preview_command(&question) {
+                        let _ = tx.send(Msg::MemoryPanel { title, text });
+                    } else {
+                        local_answer(&tx, &local_references, &question);
+                    }
                 } else if matches!(message, Msg::Research) {
                     let _ = tx.send(Msg::Sys("Preview mode: no audio capture or online requests. Dropped files can still be previewed locally.".into()));
                 }
@@ -1551,13 +1579,16 @@ fn main() -> Result<()> {
     let online = provider.is_some();
     let agent = agent_config.map(|config| agent::Agent::new(config, turn_tx.clone()));
     let model = provider.as_ref().map(|p| p.model.clone());
-    let learning = Some(learning::Learning::new(
-        provider.clone(),
-        log.as_ref().map(|l| l.path().to_path_buf()),
-        args.learning,
-        args.keep_days,
-        ui_tx.clone(),
-    ));
+    let learning = Some(
+        learning::Learning::new(
+            provider.clone(),
+            log.as_ref().map(|l| l.path().to_path_buf()),
+            args.learning,
+            args.keep_days,
+            ui_tx.clone(),
+        )
+        .with_config(env_path.clone()),
+    );
     let coach = provider.map(|p| coach::Coach::new(p, prompt, turn_tx.clone()));
     {
         let (rx, tx) = (turn_rx, ui_tx.clone());

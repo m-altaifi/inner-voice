@@ -66,6 +66,7 @@ const HELP: usize = 113;
 const PIN: usize = 114;
 const RECALL: usize = 116;
 const CONFIG: usize = 117;
+const MEMORY: usize = 118;
 
 /// Turns of conversation kept on screen above the advice, at minimum.
 ///
@@ -193,7 +194,35 @@ const FORWARD: usize = 0;
 /// This table is the dispatcher as well as the help text. A command used to be
 /// an `if text == ...` arm that only the help table knew about, which is two
 /// places to forget; now adding one is a row.
-const COMMANDS: [(&str, usize, &str); 15] = [
+const COMMANDS: [(&str, usize, &str); 23] = [
+    (
+        "/memory [topic or id]",
+        FORWARD,
+        "learned claims and their evidence",
+    ),
+    (
+        "/awareness",
+        FORWARD,
+        "observed participants, projects and uncertainties",
+    ),
+    ("/commitments", FORWARD, "open commitments and questions"),
+    (
+        "/learning on|off",
+        FORWARD,
+        "enable or pause background learning",
+    ),
+    ("/memory confirm <id>", FORWARD, "endorse a learned claim"),
+    (
+        "/memory correct <id> <replacement>",
+        FORWARD,
+        "correct a learned claim",
+    ),
+    (
+        "/memory dismiss <id>",
+        FORWARD,
+        "hide a learned claim; transcript remains",
+    ),
+    ("/commitments done <id>", FORWARD, "complete an open item"),
     (
         "/config",
         CONFIG,
@@ -487,6 +516,11 @@ struct State {
     advice: String,
     research: String,
     recall: String,
+    memory_title: String,
+    memory_text: String,
+    learning_enabled: bool,
+    learning_brief: String,
+    learning_detail: String,
     researching: bool,
     research_id: u64,
     transcript: VecDeque<(String, String)>,
@@ -603,6 +637,21 @@ impl State {
                     self.recall = text;
                     self.view = RECALL;
                     self.notice = "Earlier speech; verify it against newer decisions. Ctrl+Shift+F1 returns to advice.".into();
+                }
+                Msg::MemoryPanel { title, text } => {
+                    self.memory_title = title;
+                    self.memory_text = text;
+                    self.view = MEMORY;
+                    self.notice="Ctrl+Shift+F1 returns to advice. Learned claims remain attributed and revisable.".into();
+                }
+                Msg::LearningStatus {
+                    enabled,
+                    brief,
+                    detail,
+                } => {
+                    self.learning_enabled = enabled;
+                    self.learning_brief = brief;
+                    self.learning_detail = detail;
                 }
                 Msg::ContextReset => {
                     self.advice.clear();
@@ -913,8 +962,10 @@ impl State {
             );
         } else {
             ui.label(
-                RichText::new("Click a value to change it. Enter saves; Esc cancels. Changes save to .env.")
-                    .color(MUTED),
+                RichText::new(
+                    "Click a value to change it. Enter saves; Esc cancels. Changes save to .env.",
+                )
+                .color(MUTED),
             );
         }
         ui.add_space(8.0);
@@ -986,7 +1037,11 @@ impl State {
                     }
                 } else {
                     let val = self.config_value(field.env);
-                    let shown = if val.is_empty() { "(unset)".to_string() } else { val };
+                    let shown = if val.is_empty() {
+                        "(unset)".to_string()
+                    } else {
+                        val
+                    };
                     let mark = self.restart_mark(field.env);
                     let label = format!("{}: {}{}", field.label, shown, mark);
                     if ui.selectable_label(false, label).clicked() && editable {
@@ -1008,8 +1063,11 @@ impl State {
         let provider = self.config_value("IV_PROVIDER");
         let Some(var) = crate::provider::key_var(&provider) else {
             ui.label(
-                RichText::new(format!("{}: not used by provider \"{provider}\"", field.label))
-                    .color(MUTED),
+                RichText::new(format!(
+                    "{}: not used by provider \"{provider}\"",
+                    field.label
+                ))
+                .color(MUTED),
             );
             return;
         };
@@ -1072,6 +1130,7 @@ impl State {
     /// resolve a var even when `.env` never set it.
     fn config_value(&self, env: &str) -> String {
         match env {
+            "IV_LEARNING" => return self.learning_enabled.to_string(),
             "IV_HEAR" => {
                 return self
                     .session
@@ -1124,6 +1183,13 @@ impl State {
     /// change without a restart, a "restart to apply" mark for the rest.
     /// `IV_MANUAL` is stored inverted — the row is "Coaching armed" = `!manual`.
     fn commit_field(&mut self, field: &config::Field, value: String) {
+        if field.env == "IV_LEARNING" {
+            let _ = self.tx.send(Msg::Question(format!(
+                "/learning {}",
+                if value == "true" { "on" } else { "off" }
+            )));
+            return;
+        }
         let persist_val = if field.env == "IV_MANUAL" {
             // value is the armed bool; the flag on disk is manual = !armed.
             (value != "true").to_string()
@@ -1152,7 +1218,12 @@ impl State {
                 let armed = value == "true";
                 self.coaching = armed;
                 let _ = self.tx.send(Msg::Coaching(armed));
-                self.notice = if armed { "coaching armed" } else { "coaching muted" }.into();
+                self.notice = if armed {
+                    "coaching armed"
+                } else {
+                    "coaching muted"
+                }
+                .into();
             }
             (Apply::Live, "IV_ALPHA") => {
                 if let Ok(n) = value.parse::<f32>() {
@@ -1180,7 +1251,7 @@ impl State {
                 online: self.session.online,
             }
         };
-        status_text(
+        let mut text = status_text(
             mode,
             self.wait(),
             self.session.model.as_deref(),
@@ -1188,7 +1259,12 @@ impl State {
             self.pinned,
             self.launched.elapsed() < Duration::from_secs(HINT_SECS),
             self.coaching,
-        )
+        );
+        if self.learning_enabled && !self.learning_brief.is_empty() {
+            text.push_str(" · ");
+            text.push_str(&self.learning_brief);
+        }
+        text
     }
     /// The conversation, newest last. Always on screen: the advice is an answer
     /// to the last turn, and an answer without its question is a riddle.
@@ -1308,6 +1384,12 @@ impl State {
                     ui.label(RichText::new(text).color(FG));
                 }
                 RECALL => { ui.label(RichText::new(&self.recall).color(FG)); }
+                MEMORY => {
+                    ui.label(RichText::new(&self.memory_title).color(ACCENT).strong());
+                    if !self.learning_detail.is_empty() {ui.label(RichText::new(&self.learning_detail).color(MUTED).size(12.0));}
+                    ui.add_space(8.0);
+                    ui.add(egui::Label::new(RichText::new(&self.memory_text).color(FG)).wrap());
+                }
                 _ if self.advice.is_empty() => {
                     let mode = if self.session.online {
                         "Advice appears after the other person speaks. Drop reference files anywhere on this window."
@@ -1415,6 +1497,10 @@ impl State {
         };
         let now = serde_json::json!({
             "view": self.view,
+            "memory_title": self.memory_title,
+            "memory_text": self.memory_text,
+            "learning_enabled": self.learning_enabled,
+            "learning_status": self.learning_brief,
             "turns": self.transcript.len(),
             "notice": self.notice,
             "advice": self.advice,
@@ -1694,6 +1780,11 @@ pub fn run(
                 advice: String::new(),
                 research: String::new(),
                 recall: String::new(),
+                memory_title: String::new(),
+                memory_text: String::new(),
+                learning_enabled: false,
+                learning_brief: String::new(),
+                learning_detail: String::new(),
                 researching: false,
                 research_id: 0,
                 transcript: VecDeque::new(),
@@ -1817,6 +1908,11 @@ mod tests {
             advice: String::new(),
             research: String::new(),
             recall: String::new(),
+            memory_title: String::new(),
+            memory_text: String::new(),
+            learning_enabled: false,
+            learning_brief: String::new(),
+            learning_detail: String::new(),
             researching: false,
             research_id: 0,
             transcript: VecDeque::new(),
@@ -1832,6 +1928,30 @@ mod tests {
     /// armed", but the flag on disk is `IV_MANUAL` = *not* armed, and `route`
     /// has to be told live or the running session and `.env` disagree.
     #[test]
+    fn memory_panels_do_not_replace_or_speak_coaching_and_status_keeps_the_view() {
+        let (mut panel, tx) = message_panel();
+        panel.advice = "NOTE Existing advice.".into();
+        tx.send(Msg::MemoryPanel {
+            title: "Evidence".into(),
+            text: "Reported by YOU at a known time.".into(),
+        })
+        .unwrap();
+        tx.send(Msg::LearningStatus {
+            enabled: true,
+            brief: "learning paused".into(),
+            detail: "2 pending".into(),
+        })
+        .unwrap();
+        panel.pump();
+        assert_eq!(panel.view, MEMORY);
+        assert_eq!(panel.memory_title, "Evidence");
+        assert_eq!(panel.advice, "NOTE Existing advice.");
+        assert!(!panel.thinking);
+        assert!(panel.config_bool("IV_LEARNING"));
+        assert!(panel.status_line().contains("learning paused"));
+    }
+
+    #[test]
     fn coaching_toggle_persists_inverted_and_applies_live() {
         let (mut panel, _tx) = message_panel();
         let mut path = std::env::temp_dir();
@@ -1846,13 +1966,19 @@ mod tests {
         panel.session.env_path = Some(path.clone());
         panel.coaching = true;
 
-        let field = config::FIELDS.iter().find(|f| f.env == "IV_MANUAL").unwrap();
+        let field = config::FIELDS
+            .iter()
+            .find(|f| f.env == "IV_MANUAL")
+            .unwrap();
         // Committing "false" (not armed) mutes coaching.
         panel.commit_field(field, "false".to_string());
 
         assert!(!panel.coaching, "coaching should be muted");
         let env = std::fs::read_to_string(&path).unwrap();
-        assert!(env.contains("IV_MANUAL=true"), "manual flag not inverted: {env}");
+        assert!(
+            env.contains("IV_MANUAL=true"),
+            "manual flag not inverted: {env}"
+        );
         assert!(
             matches!(panel.rx.try_recv(), Ok(Msg::Coaching(false))),
             "route was not told to mute"
@@ -2108,9 +2234,17 @@ mod tests {
             assert!(name.starts_with('/'), "{name} is not a command");
             assert!(
                 id != FORWARD
-                    || ["/hear", "/who", "/recall"]
-                        .iter()
-                        .any(|p| name.starts_with(p)),
+                    || [
+                        "/hear",
+                        "/who",
+                        "/recall",
+                        "/memory",
+                        "/awareness",
+                        "/commitments",
+                        "/learning"
+                    ]
+                    .iter()
+                    .any(|p| name.starts_with(p)),
                 "{name} forwards to a router that does not handle it"
             );
         }

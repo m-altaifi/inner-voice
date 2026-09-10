@@ -22,7 +22,14 @@ use std::path::{Path, PathBuf};
 pub const KEY_SENTINEL: &str = "IV_API_KEY";
 
 /// The provider names the enum offers: the `preset()` vendors plus `none`.
-pub const PROVIDERS: &[&str] = &["anthropic", "openai", "deepseek", "gemini", "openrouter", "none"];
+pub const PROVIDERS: &[&str] = &[
+    "anthropic",
+    "openai",
+    "deepseek",
+    "gemini",
+    "openrouter",
+    "none",
+];
 
 #[derive(Clone, Copy, PartialEq)]
 pub enum Apply {
@@ -40,7 +47,10 @@ pub enum Kind {
     Bool,
     Enum(&'static [&'static str]),
     /// Inclusive integer range. Bounds mirror the clap attrs in `main.rs`.
-    Number { min: i64, max: i64 },
+    Number {
+        min: i64,
+        max: i64,
+    },
     /// A VAD threshold, validated by `crate::parse_gate` (0 < x < 1).
     Gate,
 }
@@ -61,48 +71,238 @@ use Apply::{Live, Restart};
 /// not configuration.
 pub const FIELDS: &[Field] = &[
     // Provider
-    Field { label: "Provider", env: "IV_PROVIDER", section: "Provider", kind: Kind::Enum(PROVIDERS), apply: Restart },
-    Field { label: "Model", env: "IV_MODEL", section: "Provider", kind: Kind::Text, apply: Restart },
-    Field { label: "API key", env: KEY_SENTINEL, section: "Provider", kind: Kind::Secret, apply: Restart },
-    Field { label: "Coaching persona (path)", env: "IV_PROMPT", section: "Provider", kind: Kind::Text, apply: Restart },
-
+    Field {
+        label: "Provider",
+        env: "IV_PROVIDER",
+        section: "Provider",
+        kind: Kind::Enum(PROVIDERS),
+        apply: Restart,
+    },
+    Field {
+        label: "Model",
+        env: "IV_MODEL",
+        section: "Provider",
+        kind: Kind::Text,
+        apply: Restart,
+    },
+    Field {
+        label: "API key",
+        env: KEY_SENTINEL,
+        section: "Provider",
+        kind: Kind::Secret,
+        apply: Restart,
+    },
+    Field {
+        label: "Coaching persona (path)",
+        env: "IV_PROMPT",
+        section: "Provider",
+        kind: Kind::Text,
+        apply: Restart,
+    },
     // Audio
-    Field { label: "Microphone", env: "IV_MIC", section: "Audio", kind: Kind::Text, apply: Restart },
-    Field { label: "Loopback device", env: "IV_LOOPBACK", section: "Audio", kind: Kind::Text, apply: Restart },
-    Field { label: "Hear only these apps", env: "IV_HEAR", section: "Audio", kind: Kind::Text, apply: Live },
-    Field { label: "Mic gate", env: "IV_MIC_GATE", section: "Audio", kind: Kind::Gate, apply: Restart },
-    Field { label: "System gate", env: "IV_SYS_GATE", section: "Audio", kind: Kind::Gate, apply: Restart },
-    Field { label: "Read advice aloud", env: "IV_SPEAK", section: "Audio", kind: Kind::Bool, apply: Restart },
-    Field { label: "Voice", env: "IV_VOICE", section: "Audio", kind: Kind::Text, apply: Restart },
-
+    Field {
+        label: "Microphone",
+        env: "IV_MIC",
+        section: "Audio",
+        kind: Kind::Text,
+        apply: Restart,
+    },
+    Field {
+        label: "Loopback device",
+        env: "IV_LOOPBACK",
+        section: "Audio",
+        kind: Kind::Text,
+        apply: Restart,
+    },
+    Field {
+        label: "Hear only these apps",
+        env: "IV_HEAR",
+        section: "Audio",
+        kind: Kind::Text,
+        apply: Live,
+    },
+    Field {
+        label: "Mic gate",
+        env: "IV_MIC_GATE",
+        section: "Audio",
+        kind: Kind::Gate,
+        apply: Restart,
+    },
+    Field {
+        label: "System gate",
+        env: "IV_SYS_GATE",
+        section: "Audio",
+        kind: Kind::Gate,
+        apply: Restart,
+    },
+    Field {
+        label: "Read advice aloud",
+        env: "IV_SPEAK",
+        section: "Audio",
+        kind: Kind::Bool,
+        apply: Restart,
+    },
+    Field {
+        label: "Voice",
+        env: "IV_VOICE",
+        section: "Audio",
+        kind: Kind::Text,
+        apply: Restart,
+    },
     // Behaviour
-    Field { label: "Coaching armed", env: "IV_MANUAL", section: "Behaviour", kind: Kind::Bool, apply: Live },
-    Field { label: "Opacity (0-255)", env: "IV_ALPHA", section: "Behaviour", kind: Kind::Number { min: 0, max: 255 }, apply: Live },
-    Field { label: "Minimum words", env: "IV_MIN_WORDS", section: "Behaviour", kind: Kind::Number { min: 0, max: 100 }, apply: Restart },
-    Field { label: "Settle (ms)", env: "IV_SETTLE", section: "Behaviour", kind: Kind::Number { min: 0, max: 10_000 }, apply: Restart },
-
+    Field {
+        label: "Coaching armed",
+        env: "IV_MANUAL",
+        section: "Behaviour",
+        kind: Kind::Bool,
+        apply: Live,
+    },
+    Field {
+        label: "Opacity (0-255)",
+        env: "IV_ALPHA",
+        section: "Behaviour",
+        kind: Kind::Number { min: 0, max: 255 },
+        apply: Live,
+    },
+    Field {
+        label: "Minimum words",
+        env: "IV_MIN_WORDS",
+        section: "Behaviour",
+        kind: Kind::Number { min: 0, max: 100 },
+        apply: Restart,
+    },
+    Field {
+        label: "Settle (ms)",
+        env: "IV_SETTLE",
+        section: "Behaviour",
+        kind: Kind::Number {
+            min: 0,
+            max: 10_000,
+        },
+        apply: Restart,
+    },
     // Naming
-    Field { label: "People book (path)", env: "IV_PEOPLE", section: "Naming", kind: Kind::Text, apply: Restart },
-    Field { label: "Keep days", env: "IV_KEEP_DAYS", section: "Naming", kind: Kind::Number { min: 0, max: 100_000 }, apply: Restart },
-    Field { label: "Keep turns", env: "IV_KEEP_TURNS", section: "Naming", kind: Kind::Number { min: 0, max: 100_000 }, apply: Restart },
-    Field { label: "Voice model (path)", env: "IV_VOICES", section: "Naming", kind: Kind::Text, apply: Restart },
-
+    Field {
+        label: "People book (path)",
+        env: "IV_PEOPLE",
+        section: "Naming",
+        kind: Kind::Text,
+        apply: Restart,
+    },
+    Field {
+        label: "Keep days",
+        env: "IV_KEEP_DAYS",
+        section: "Naming",
+        kind: Kind::Number {
+            min: 0,
+            max: 100_000,
+        },
+        apply: Restart,
+    },
+    Field {
+        label: "Keep turns",
+        env: "IV_KEEP_TURNS",
+        section: "Naming",
+        kind: Kind::Number {
+            min: 0,
+            max: 100_000,
+        },
+        apply: Restart,
+    },
+    Field {
+        label: "Voice model (path)",
+        env: "IV_VOICES",
+        section: "Naming",
+        kind: Kind::Text,
+        apply: Restart,
+    },
     // Knowledge
-    Field { label: "Knowledge folder (path)", env: "IV_KNOWLEDGE", section: "Knowledge", kind: Kind::Text, apply: Restart },
-    Field { label: "References folder (path)", env: "IV_REFERENCES", section: "Knowledge", kind: Kind::Text, apply: Restart },
-
+    Field {
+        label: "Learn from new speech",
+        env: "IV_LEARNING",
+        section: "Knowledge",
+        kind: Kind::Bool,
+        apply: Live,
+    },
+    Field {
+        label: "Knowledge folder (path)",
+        env: "IV_KNOWLEDGE",
+        section: "Knowledge",
+        kind: Kind::Text,
+        apply: Restart,
+    },
+    Field {
+        label: "References folder (path)",
+        env: "IV_REFERENCES",
+        section: "Knowledge",
+        kind: Kind::Text,
+        apply: Restart,
+    },
     // Research
-    Field { label: "Research persona (path)", env: "IV_RESEARCH_PROMPT", section: "Research", kind: Kind::Text, apply: Restart },
-    Field { label: "Agent command (path)", env: "IV_AGENT_CMD", section: "Research", kind: Kind::Text, apply: Restart },
-    Field { label: "Agent root (path)", env: "IV_AGENT_ROOT", section: "Research", kind: Kind::Text, apply: Restart },
-    Field { label: "Agent timeout (s)", env: "IV_AGENT_TIMEOUT", section: "Research", kind: Kind::Number { min: 5, max: 300 }, apply: Restart },
-    Field { label: "Everything es.exe (path)", env: "IV_ES", section: "Research", kind: Kind::Text, apply: Restart },
-    Field { label: "Filename search", env: "IV_SEARCH_QUERY", section: "Research", kind: Kind::Text, apply: Restart },
-
+    Field {
+        label: "Research persona (path)",
+        env: "IV_RESEARCH_PROMPT",
+        section: "Research",
+        kind: Kind::Text,
+        apply: Restart,
+    },
+    Field {
+        label: "Agent command (path)",
+        env: "IV_AGENT_CMD",
+        section: "Research",
+        kind: Kind::Text,
+        apply: Restart,
+    },
+    Field {
+        label: "Agent root (path)",
+        env: "IV_AGENT_ROOT",
+        section: "Research",
+        kind: Kind::Text,
+        apply: Restart,
+    },
+    Field {
+        label: "Agent timeout (s)",
+        env: "IV_AGENT_TIMEOUT",
+        section: "Research",
+        kind: Kind::Number { min: 5, max: 300 },
+        apply: Restart,
+    },
+    Field {
+        label: "Everything es.exe (path)",
+        env: "IV_ES",
+        section: "Research",
+        kind: Kind::Text,
+        apply: Restart,
+    },
+    Field {
+        label: "Filename search",
+        env: "IV_SEARCH_QUERY",
+        section: "Research",
+        kind: Kind::Text,
+        apply: Restart,
+    },
     // Logging
-    Field { label: "Whisper model (path)", env: "IV_WHISPER", section: "Logging", kind: Kind::Text, apply: Restart },
-    Field { label: "Transcript folder (path)", env: "IV_LOG", section: "Logging", kind: Kind::Text, apply: Restart },
-    Field { label: "Dump folder (path)", env: "IV_DUMP", section: "Logging", kind: Kind::Text, apply: Restart },
+    Field {
+        label: "Whisper model (path)",
+        env: "IV_WHISPER",
+        section: "Logging",
+        kind: Kind::Text,
+        apply: Restart,
+    },
+    Field {
+        label: "Transcript folder (path)",
+        env: "IV_LOG",
+        section: "Logging",
+        kind: Kind::Text,
+        apply: Restart,
+    },
+    Field {
+        label: "Dump folder (path)",
+        env: "IV_DUMP",
+        section: "Logging",
+        kind: Kind::Text,
+        apply: Restart,
+    },
 ];
 
 /// Validate a typed value for `kind`, returning the string to persist. Bool and
@@ -112,7 +312,9 @@ pub fn validate(kind: &Kind, input: &str) -> Result<String, String> {
     match kind {
         Kind::Gate => crate::parse_gate(v).map(|g| g.to_string()),
         Kind::Number { min, max } => {
-            let n: i64 = v.parse().map_err(|_| "must be a whole number".to_string())?;
+            let n: i64 = v
+                .parse()
+                .map_err(|_| "must be a whole number".to_string())?;
             if n < *min || n > *max {
                 return Err(format!("must be between {min} and {max}"));
             }
@@ -195,8 +397,15 @@ mod tests {
         let out = std::fs::read_to_string(&path).unwrap();
         assert!(out.contains("# a header comment"), "lost the comment");
         assert!(out.contains("ANTHROPIC_API_KEY=sk-new"), "key not written");
-        assert!(!out.contains("# ANTHROPIC_API_KEY="), "commented form left behind");
-        assert_eq!(out.matches("ANTHROPIC_API_KEY=").count(), 1, "duplicated key");
+        assert!(
+            !out.contains("# ANTHROPIC_API_KEY="),
+            "commented form left behind"
+        );
+        assert_eq!(
+            out.matches("ANTHROPIC_API_KEY=").count(),
+            1,
+            "duplicated key"
+        );
         assert!(out.contains("IV_MODEL=gpt-4o") && !out.contains("claude-opus-5"));
         assert!(out.contains("IV_ALPHA=200"), "new key not appended");
         // Atomic write leaves no temp behind.
@@ -210,7 +419,10 @@ mod tests {
     #[test]
     fn validate_bounds_and_gate() {
         assert!(validate(&Kind::Number { min: 0, max: 255 }, "256").is_err());
-        assert_eq!(validate(&Kind::Number { min: 0, max: 255 }, " 200 ").unwrap(), "200");
+        assert_eq!(
+            validate(&Kind::Number { min: 0, max: 255 }, " 200 ").unwrap(),
+            "200"
+        );
         assert!(validate(&Kind::Gate, "0").is_err());
         assert!(validate(&Kind::Gate, "0.5").is_ok());
     }

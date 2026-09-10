@@ -226,6 +226,51 @@ Fault tests and the configured-provider check are recorded in
 
 ## Controls and research
 
+### Learned knowledge and awareness
+
+`--learning` / `IV_LEARNING=true` enables attributed background learning from new
+speech. It uses the configured provider/model, at most twelve requests per rolling
+hour and no more than one every five minutes. Muting advice or pausing listening
+also pauses learning requests. New-session backlog resumes after re-arming.
+The setting defaults off; `/learning on` or `/learning off` changes it immediately
+and saves it when a `.env` file is available. The Configuration pane exposes the
+same setting. `--provider none` performs no learning requests.
+
+| Command | Result |
+|---|---|
+| `/memory [project and topic]` | Up to twenty matching learned claims |
+| `/memory <id>` | Attributed source speech, speaker, time and file offset |
+| `/memory confirm <id>` | Mark a claim as endorsed by you |
+| `/memory correct <id> <replacement>` | Correct a claim and supersede competing versions |
+| `/memory dismiss <id>` | Hide learned knowledge; original transcripts remain |
+| `/commitments` | Open commitments and unanswered questions |
+| `/commitments done <id>` | Complete an open item |
+| `/awareness` | Recent observations, participants, referenced projects and uncertainty |
+| `/learning` | Learning state, backlog, failures and last successful consolidation |
+
+Knowledge lives in `memory.sqlite3` beneath the transcript folder. It keeps source
+references, revision history and extraction progress. Existing logs are not
+automatically imported into this new store; `/recall` retains its original behavior.
+With `IV_LOG=` empty, knowledge is bounded to the current process and no persistent
+database is read or written. The existing retention setting also applies to source
+evidence and its derived knowledge. Deleting the final supporting source removes
+the learned claim; dismissal alone does not delete a transcript.
+
+Extracted claims are reported evidence, not verified facts. A user confirmation
+means endorsement, not independent verification. Conflicting claims remain
+disputed unless explicitly corrected by their attributed speaker or by you.
+Unknown project scopes stay session-local. Learned claims never become
+instructions, and model advice/research never becomes its own evidence.
+Additional working context and knowledge share a 4 KB prompt budget. The database
+and network workers cannot block live audio or advice dispatch.
+
+Awareness describes observed speech. It cannot establish unspoken intent or events
+outside the captured audio. Hourly resets and audio-source changes clear transient
+context; durable open items remain available when relevant. Preview mode includes
+synthetic examples of the new panes without persistence or online requests.
+For a reproducible view, run `inner-voice.exe --preview --preview-command /memory`
+(also `/awareness`, `/commitments`, or `/learning`).
+
 The borderless panel is one page: a status line, the advice, the conversation,
 and a one-line question box, all visible at once. Advice answers the last turn,
 so you need both in front of you; pressing a key to see one of them mid-sentence

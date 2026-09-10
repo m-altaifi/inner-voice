@@ -18,8 +18,8 @@ uncommitted work. Stacked PRs target their immediate dependency. Statuses are
 | M03 | `03-store`: SQLite knowledge and provenance | M02 | in_review | six storage tests pass | [PR 3](https://github.com/m-altaifi/inner-voice/pull/3) |
 | M04 | `04-learning`: bounded background consolidation | M03 | in_review | two worker tests pass, including actual local HTTP and mute gating | [PR 4](https://github.com/m-altaifi/inner-voice/pull/4) |
 | M05 | `05-retrieval`: revisions and contextual recall | M04 | in_review | nine store/retrieval tests pass; scope and 4 KB limits verified | [PR 5](https://github.com/m-altaifi/inner-voice/pull/5) |
-| M06 | `06-awareness`: working memory and open items | M05 | in_review | full release suite passes; paced hour running separately | PR pending |
-| M07 | `07-controls`: inspect and correct memory | M06 | planned | command panes, source inspection, learning status | pending |
+| M06 | `06-awareness`: working memory and open items | M05 | in_review | full release suite passes; paced hour running separately | [PR 6](https://github.com/m-altaifi/inner-voice/pull/6) |
+| M07 | `07-controls`: inspect and correct memory | M06 | in_review | 174 unit + 2 integration tests; GUI smoke and all four preview panes pass | PR pending |
 | M08 | `08-validation`: retention and release evidence | M07 | planned | fault tests, 100k replay, paced hour, restart, release checks | pending |
 
 ## Implementation contract
