@@ -11,7 +11,7 @@ use std::io::{BufRead, BufReader, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::sync::{
     Arc, RwLock,
-    atomic::{AtomicBool, AtomicU64, Ordering},
+    atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering},
 };
 use std::time::{Duration, Instant};
 
@@ -30,7 +30,6 @@ pub struct Snapshot {
 }
 
 enum Command {
-    Enable,
     Speech {
         source: String,
         offset: i64,
@@ -55,6 +54,8 @@ pub struct Learning {
     persistent: bool,
     provider_available: bool,
     config_path: Option<PathBuf>,
+    session: Option<PathBuf>,
+    activation_offset: Arc<AtomicI64>,
     ephemeral_next: AtomicU64,
     ui: Sender<Msg>,
 }
@@ -85,6 +86,7 @@ impl Learning {
         let stop = Arc::new(AtomicBool::new(false));
         let persistent = session.is_some();
         let provider_available = provider.is_some();
+        let activation_offset = Arc::new(AtomicI64::new(if enabled { 0 } else { -1 }));
         let handle = Self {
             commands,
             snapshot: snapshot.clone(),
@@ -95,6 +97,8 @@ impl Learning {
             persistent,
             provider_available,
             config_path: None,
+            session: session.clone(),
+            activation_offset: activation_offset.clone(),
             ephemeral_next: AtomicU64::new(0),
             ui: ui.clone(),
         };
@@ -109,9 +113,16 @@ impl Learning {
                 allowed: permitted,
                 generation,
                 stop,
+                activation_offset,
             };
             if let Err(error) = worker(rx, &config) {
+                if let Ok(mut s) = config.snapshot.write() {
+                    s.claims.clear();
+                    s.index = crate::memory_context::Index::default();
+                    s.busy = false;
+                }
                 publish_error(&config, &format!("learned memory unavailable: {error}"));
+                let _=config.ui.send(Msg::LearningStatus{enabled:config.enabled.load(Ordering::SeqCst),brief:"learning unavailable".into(),detail:"Learned memory is unavailable; transcript coaching continues. See diagnostics.".into()});
             }
         });
         handle
@@ -124,14 +135,23 @@ impl Learning {
     }
 
     pub fn set_enabled(&self, on: bool) -> Result<()> {
+        let offset = if on && !self.enabled() {
+            Some(match &self.session {
+                Some(path) => i64::try_from(std::fs::metadata(path)?.len())
+                    .context("transcript exceeds supported size")?,
+                None => 0,
+            })
+        } else {
+            None
+        };
         if let Some(path) = &self.config_path {
             crate::config::upsert_env(path, "IV_LEARNING", &on.to_string())?;
         }
+        if let Some(offset) = offset {
+            self.activation_offset.store(offset, Ordering::SeqCst);
+        }
         if self.enabled.swap(on, Ordering::SeqCst) != on {
             self.generation.fetch_add(1, Ordering::SeqCst);
-        }
-        if on {
-            self.send(Command::Enable);
         }
         Ok(())
     }
@@ -199,11 +219,11 @@ impl Learning {
                 },
                 "Use /memory correct <id> <replacement>, or an action followed only by its ID."
             );
-            self.edit(id, action, text);
+            self.edit(id, action, text)?;
             return Ok((
                 "Memory".into(),
                 format!(
-                    "Requested {action} for #{id}. The result will appear here; original transcripts remain."
+                    "Requested {action} for #{id}. Check the result notice; original transcripts remain."
                 ),
             ));
         }
@@ -294,7 +314,7 @@ impl Learning {
     pub fn speech(&self, source: &str, _offset: i64, speaker: &str, text: &str) {
         if !self.persistent && self.enabled() {
             let offset = self.ephemeral_next.fetch_add(1, Ordering::Relaxed) as i64;
-            self.send(Command::Speech {
+            let _ = self.send(Command::Speech {
                 source: source.into(),
                 offset,
                 speaker: speaker.into(),
@@ -304,21 +324,23 @@ impl Learning {
         }
     }
 
-    pub fn edit(&self, id: i64, action: &str, text: &str) {
+    pub fn edit(&self, id: i64, action: &str, text: &str) -> Result<()> {
         self.generation.fetch_add(1, Ordering::SeqCst);
         self.send(Command::Edit {
             id,
             action: action.into(),
             text: text.into(),
-        });
+        })
     }
 
-    fn send(&self, command: Command) {
+    fn send(&self, command: Command) -> Result<()> {
         if self.commands.try_send(command).is_err() {
             let _ = self.ui.send(Msg::Sys(
                 "learning: command queue unavailable/full; the operation was not applied".into(),
             ));
+            anyhow::bail!("Learning command queue is unavailable or full; retry the operation.");
         }
+        Ok(())
     }
 }
 impl Drop for Learning {
@@ -338,6 +360,7 @@ struct WorkerConfig {
     allowed: Arc<AtomicBool>,
     generation: Arc<AtomicU64>,
     stop: Arc<AtomicBool>,
+    activation_offset: Arc<AtomicI64>,
 }
 
 fn publish_error(c: &WorkerConfig, error: &str) {
@@ -347,14 +370,9 @@ fn publish_error(c: &WorkerConfig, error: &str) {
     let _ = c.ui.send(Msg::Sys(format!("learning: {error}")));
 }
 
-fn register_session(store: &Store, c: &WorkerConfig, at_start: bool) -> Result<()> {
+fn register_session(store: &Store, c: &WorkerConfig, position: i64) -> Result<()> {
     store.enable_at(crate::people::now() as i64)?;
     if let Some(path) = &c.session {
-        let position = if at_start {
-            0
-        } else {
-            std::fs::metadata(path)?.len() as i64
-        };
         store.register(&path.to_string_lossy(), position)?;
     }
     Ok(())
@@ -363,9 +381,6 @@ fn register_session(store: &Store, c: &WorkerConfig, at_start: bool) -> Result<(
 fn worker(rx: Receiver<Command>, c: &WorkerConfig) -> Result<()> {
     let folder = c.session.as_ref().and_then(|p| p.parent());
     let mut store = Store::open(folder)?;
-    if c.enabled.load(Ordering::SeqCst) {
-        register_session(&store, c, true)?;
-    }
     let (results, done) = bounded::<(u64, ConsolidationBatch, Result<String>)>(1);
     let mut busy = false;
     let mut dirty = true;
@@ -374,13 +389,14 @@ fn worker(rx: Receiver<Command>, c: &WorkerConfig) -> Result<()> {
     let mut last_error = String::new();
     let mut last_status = String::new();
     while !c.stop.load(Ordering::SeqCst) {
+        if c.enabled.load(Ordering::SeqCst) {
+            let position = c.activation_offset.swap(-1, Ordering::SeqCst);
+            if position >= 0 {
+                register_session(&store, c, position)?;
+            }
+        }
         let mut edited = None;
         match rx.recv_timeout(Duration::from_millis(100)) {
-            Ok(Command::Enable) => {
-                if let Err(e) = register_session(&store, c, false) {
-                    publish_error(c, &e.to_string());
-                }
-            }
             Ok(Command::Speech {
                 source,
                 offset,
@@ -409,16 +425,16 @@ fn worker(rx: Receiver<Command>, c: &WorkerConfig) -> Result<()> {
         if maintenance.elapsed() >= Duration::from_secs(1) {
             let result = scan_sources(&mut store, folder, c.keep_days);
             match result {
-                Ok(changed) => {
-                    dirty |= changed;
-                    last_error.clear();
+                Ok(report) => {
+                    dirty |= report.changed;
+                    let error = report.warnings.join("; ");
+                    if !error.is_empty() && error != last_error {
+                        publish_error(c, &error);
+                    }
+                    last_error = error;
                 }
                 Err(e) => {
-                    let error = e.to_string();
-                    if error != last_error {
-                        publish_error(c, &error);
-                        last_error = error;
-                    }
+                    return Err(e.context("validating learned evidence"));
                 }
             }
             maintenance = Instant::now();
@@ -445,17 +461,20 @@ fn worker(rx: Receiver<Command>, c: &WorkerConfig) -> Result<()> {
             }
             dirty = true;
         }
+        let generation = c.generation.load(Ordering::SeqCst);
         if !busy
             && c.enabled.load(Ordering::SeqCst)
             && c.allowed.load(Ordering::SeqCst)
             && let Some(provider) = &c.provider
             && let Some(batch) = store.batch()?
             && store.reserve_request(crate::people::now() as i64)?
+            && generation == c.generation.load(Ordering::SeqCst)
+            && c.allowed.load(Ordering::SeqCst)
+            && c.enabled.load(Ordering::SeqCst)
         {
             let provider = provider.clone();
             let tx = results.clone();
             let live = c.generation.clone();
-            let generation = live.load(Ordering::SeqCst);
             busy = true;
             std::thread::spawn(move || {
                 let result = crate::coach::extract_memory(
@@ -487,15 +506,17 @@ fn worker(rx: Receiver<Command>, c: &WorkerConfig) -> Result<()> {
             s.busy = busy;
         }
         if let Some(message) = edited {
-            let _ = c.ui.send(Msg::MemoryPanel {
-                title: "Memory updated".into(),
-                text: message,
-            });
+            let _ = c.ui.send(Msg::Sys(message));
         }
         let enabled = c.enabled.load(Ordering::SeqCst);
+        let needs_attention = c
+            .snapshot
+            .read()
+            .map(|s| !s.error.is_empty())
+            .unwrap_or(true);
         let brief = if !enabled {
             "learning off"
-        } else if !last_error.is_empty() {
+        } else if needs_attention {
             "learning needs attention"
         } else if c.provider.is_none() {
             "learning: no provider"
@@ -550,70 +571,127 @@ pub fn preview_command(command: &str) -> Option<(String, String)> {
 
 /// Tail only sources registered after enabling learning; never enumerate old
 /// logs. Incomplete final lines stay pending until the next scan.
-fn scan_sources(store: &mut Store, folder: Option<&Path>, keep_days: u64) -> Result<bool> {
-    let mut changed = false;
+struct ScanResult {
+    changed: bool,
+    warnings: Vec<String>,
+}
+
+fn scan_sources(store: &mut Store, folder: Option<&Path>, keep_days: u64) -> Result<ScanResult> {
+    let mut report = ScanResult {
+        changed: false,
+        warnings: Vec::new(),
+    };
     for (source, position) in store.sources()? {
-        let path = Path::new(&source);
-        // The source registry is data too. A modified DB must not read outside
-        // the configured transcript folder or enqueue arbitrary local files.
-        let folder = folder
-            .context("persistent source in ephemeral memory")?
-            .canonicalize()?;
-        let canonical = match path.canonicalize() {
-            Ok(p) => p,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+        match scan_source(store, folder, &source, position, &mut report.warnings) {
+            Ok(changed) => report.changed |= changed,
+            Err(e) => {
                 store.remove_source(&source)?;
-                changed = true;
-                continue;
+                report.changed = true;
+                report.warnings.push(format!(
+                    "source quarantined {source}: {e}; repair it and restart to resume"
+                ));
             }
-            Err(e) => return Err(e.into()),
-        };
-        ensure!(
-            canonical.parent() == Some(folder.as_path())
-                && canonical.file_name().is_some_and(|s| {
-                    let n = s.to_string_lossy();
-                    n.starts_with("call-") && n.ends_with(".jsonl")
-                }),
-            "invalid transcript source path"
-        );
-        let mut file = std::fs::File::open(&canonical)?;
-        if file.metadata()?.len() < (position as u64) {
-            store.remove_source(&source)?;
-            changed = true;
-            continue;
-        }
-        file.seek(SeekFrom::Start(position as u64))?;
-        let mut reader = BufReader::new(file);
-        let mut cursor = position;
-        for _ in 0..128 {
-            use std::io::Read;
-            let mut bytes = Vec::new();
-            let n = reader.by_ref().take(16_385).read_until(b'\n', &mut bytes)?;
-            if n == 0 {
-                break;
-            }
-            ensure!(
-                n <= 16_384,
-                "oversized transcript record; source inspection needed"
-            );
-            if !bytes.ends_with(b"\n") {
-                break;
-            }
-            let next = cursor + n as i64;
-            let row: serde_json::Value = serde_json::from_slice(&bytes)
-                .context("malformed transcript record; source inspection needed")?;
-            if let (Some(time), Some(who), Some(text)) =
-                (row["t"].as_i64(), row["who"].as_str(), row["text"].as_str())
-            {
-                store.ingest(&source, cursor, next, who, time / 1000, text)?;
-            } else {
-                store.advance(&source, next)?;
-            }
-            cursor = next;
-            changed = true;
         }
     }
-    store.expire(crate::people::now() as i64, keep_days)?;
+    report.changed |= store.expire(crate::people::now() as i64, keep_days)?;
+    report.warnings.truncate(4);
+    Ok(report)
+}
+
+fn scan_source(
+    store: &mut Store,
+    folder: Option<&Path>,
+    source: &str,
+    position: i64,
+    warnings: &mut Vec<String>,
+) -> Result<bool> {
+    let mut changed = false;
+    ensure!(position >= 0, "invalid negative source offset");
+    let path = Path::new(&source);
+    // The source registry is data too. A modified DB must not read outside
+    // the configured transcript folder or enqueue arbitrary local files.
+    let folder = folder
+        .context("persistent source in ephemeral memory")?
+        .canonicalize()?;
+    let canonical = match path.canonicalize() {
+        Ok(p) => p,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            store.remove_source(source)?;
+            return Ok(true);
+        }
+        Err(e) => return Err(e.into()),
+    };
+    ensure!(
+        canonical.parent() == Some(folder.as_path())
+            && canonical.file_name().is_some_and(|s| {
+                let n = s.to_string_lossy();
+                n.starts_with("call-") && n.ends_with(".jsonl")
+            }),
+        "invalid transcript source path"
+    );
+    let mut file = std::fs::File::open(&canonical)?;
+    let length = file.metadata()?.len();
+    let mut evidence_reader = BufReader::new(std::fs::File::open(&canonical)?);
+    let matches = store.evidence_matches(source, &mut |e| {
+        use std::io::Read;
+        evidence_reader.seek(SeekFrom::Start(e.offset as u64))?;
+        let mut bytes = Vec::new();
+        let n = evidence_reader
+            .by_ref()
+            .take(16_385)
+            .read_until(b'\n', &mut bytes)?;
+        if n > 16_384 || !bytes.ends_with(b"\n") {
+            return Ok(false);
+        }
+        let Ok(row) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
+            return Ok(false);
+        };
+        Ok(row["text"].as_str() == Some(e.text.as_str())
+            && row["who"].as_str() == Some(e.speaker.as_str())
+            && row["t"].as_i64().map(|t| t / 1000) == Some(e.time))
+    })?;
+    if length < (position as u64) || !matches {
+        store.remove_source(source)?;
+        store.register(source, length as i64)?;
+        warnings.push(format!(
+            "changed evidence in {source}; derived claims removed; continuing with new speech"
+        ));
+        return Ok(true);
+    }
+    file.seek(SeekFrom::Start(position as u64))?;
+    let mut reader = BufReader::new(file);
+    let mut cursor = position;
+    for _ in 0..128 {
+        use std::io::Read;
+        let mut bytes = Vec::new();
+        let n = reader.by_ref().take(16_385).read_until(b'\n', &mut bytes)?;
+        if n == 0 {
+            break;
+        }
+        ensure!(
+            n <= 16_384,
+            "oversized transcript record; source inspection needed"
+        );
+        if !bytes.ends_with(b"\n") {
+            break;
+        }
+        let next = cursor + n as i64;
+        let result = (|| -> Result<()> {
+            let row: serde_json::Value = serde_json::from_slice(&bytes)?;
+            let time = row["t"].as_i64().context("missing timestamp")?;
+            let who = row["who"].as_str().context("missing speaker")?;
+            let text = row["text"].as_str().context("missing speech")?;
+            store.ingest(source, cursor, next, who, time / 1000, text)
+        })();
+        if result.is_err() {
+            store.skip_record(source, next)?;
+            warnings.push(format!(
+                "skipped invalid speech record in {source} at byte {cursor}; original retained"
+            ));
+        }
+        cursor = next;
+        changed = true;
+    }
     Ok(changed)
 }
 
@@ -687,7 +765,7 @@ mod tests {
         std::fs::write(&new, &line).unwrap();
         let mut store = Store::open(Some(&folder)).unwrap();
         store.register(&new.to_string_lossy(), 0).unwrap();
-        assert!(!scan_sources(&mut store, Some(&folder), 0).unwrap());
+        assert!(!scan_sources(&mut store, Some(&folder), 0).unwrap().changed);
         assert!(store.batch().unwrap().is_none());
         std::fs::OpenOptions::new()
             .append(true)
@@ -695,17 +773,136 @@ mod tests {
             .unwrap()
             .write_all(b"\n")
             .unwrap();
-        assert!(scan_sources(&mut store, Some(&folder), 0).unwrap());
+        assert!(scan_sources(&mut store, Some(&folder), 0).unwrap().changed);
         let b = store.batch().unwrap().unwrap();
         assert_eq!(b.episodes.len(), 1);
         assert_eq!(b.episodes[0].source, new.to_string_lossy());
-        assert!(!scan_sources(&mut store, Some(&folder), 0).unwrap());
+        assert!(!scan_sources(&mut store, Some(&folder), 0).unwrap().changed);
         drop(store);
         std::fs::remove_dir_all(folder).unwrap();
     }
 
     #[test]
+    fn changed_or_deleted_evidence_invalidates_knowledge_and_retention_refreshes() {
+        let folder = directory("evidence");
+        let path = folder.join("call-new.jsonl");
+        let source = path.to_string_lossy();
+        let line =
+            serde_json::json!({"t":100000,"who":"YOU","text":"Orion deployment owner is Alex."})
+                .to_string()
+                + "\n";
+        let mut s = Store::open(Some(&folder)).unwrap();
+        for mode in ["changed", "deleted", "expired"] {
+            std::fs::write(&path, &line).unwrap();
+            s.register(&source, 0).unwrap();
+            assert!(scan_sources(&mut s, Some(&folder), 0).unwrap().changed);
+            let b = s.batch().unwrap().unwrap();
+            let result=serde_json::json!({"claims":[{"scope":"Orion","subject":"deployment","key":"owner","text":"Alex owns deployment.","kind":"fact","evidence":[b.episodes[0].id],"correction":false}]}).to_string();
+            s.apply(&b, &result, 101).unwrap();
+            assert_eq!(s.claims().unwrap().len(), 1);
+            let keep = match mode {
+                "changed" => {
+                    std::fs::write(&path, line.replace("Alex", "Drew")).unwrap();
+                    0
+                }
+                "deleted" => {
+                    std::fs::remove_file(&path).unwrap();
+                    0
+                }
+                _ => 1,
+            };
+            assert!(scan_sources(&mut s, Some(&folder), keep).unwrap().changed);
+            assert!(s.claims().unwrap().is_empty());
+            s.remove_source(&source).unwrap();
+        }
+        drop(s);
+        std::fs::remove_dir_all(folder).unwrap();
+    }
+
+    #[test]
+    fn enabling_mid_session_captures_the_boundary_without_waiting_for_the_worker() {
+        let folder = directory("enable-boundary");
+        let path = folder.join("call-new.jsonl");
+        let before =
+            serde_json::json!({"t":100000,"who":"YOU","text":"Old speech must not be imported."})
+                .to_string()
+                + "\n";
+        let after =
+            serde_json::json!({"t":101000,"who":"YOU","text":"Orion new speech can be learned."})
+                .to_string()
+                + "\n";
+        std::fs::write(&path, &before).unwrap();
+        let (ui, _) = crossbeam_channel::unbounded();
+        let learning = Learning::new(None, Some(path.clone()), false, 0, ui);
+        learning.set_enabled(true).unwrap();
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap()
+            .write_all(after.as_bytes())
+            .unwrap();
+        let until = Instant::now() + Duration::from_secs(4);
+        while learning.snapshot.read().unwrap().pending == 0 && Instant::now() < until {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert_eq!(learning.snapshot.read().unwrap().pending, 1);
+        let s = Store::open(Some(&folder)).unwrap();
+        let b = s.batch().unwrap().unwrap();
+        assert_eq!(b.episodes.len(), 1);
+        assert_eq!(b.episodes[0].offset, before.len() as i64);
+        assert!(b.episodes[0].text.starts_with("Orion"));
+        drop(s);
+        drop(learning);
+        // Dropping the handle retires the worker at its next 100 ms receive.
+        std::thread::sleep(Duration::from_millis(200));
+        std::fs::remove_dir_all(folder).unwrap();
+    }
+
+    #[test]
+    fn malformed_and_untrusted_sources_do_not_block_healthy_speech() {
+        let folder = directory("bad-records");
+        let good = folder.join("call-good.jsonl");
+        let oversized = folder.join("call-oversized.jsonl");
+        let untrusted = folder.join("private.txt");
+        let line =
+            serde_json::json!({"t":100000,"who":"YOU","text":"Orion deployment needs approval."})
+                .to_string();
+        std::fs::write(&good, format!("not JSON\n{line}\n")).unwrap();
+        std::fs::write(&oversized, "x".repeat(17000)).unwrap();
+        std::fs::write(&untrusted, format!("{line}\n")).unwrap();
+        let mut s = Store::open(Some(&folder)).unwrap();
+        for path in [&good, &oversized, &untrusted] {
+            s.register(&path.to_string_lossy(), 0).unwrap();
+        }
+        let report = scan_sources(&mut s, Some(&folder), 0).unwrap();
+        assert!(report.changed);
+        assert_eq!(report.warnings.len(), 3);
+        assert_eq!(s.sources().unwrap().len(), 1);
+        assert_eq!(s.counts().unwrap().1, 1);
+        let b = s.batch().unwrap().unwrap();
+        assert_eq!(b.episodes.len(), 1);
+        assert_eq!(b.episodes[0].source, good.to_string_lossy());
+        assert!(
+            std::fs::read_to_string(&good)
+                .unwrap()
+                .starts_with("not JSON")
+        );
+        assert!(!scan_sources(&mut s, Some(&folder), 0).unwrap().changed);
+        drop(s);
+        std::fs::remove_dir_all(folder).unwrap();
+    }
+
+    #[test]
     fn worker_uses_real_http_but_keeps_muted_speech_local_until_armed() {
+        exercise_worker_http(false);
+    }
+
+    #[test]
+    fn muted_inflight_http_cannot_publish_knowledge() {
+        exercise_worker_http(true);
+    }
+
+    fn exercise_worker_http(cancel: bool) {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         listener.set_nonblocking(true).unwrap();
         let url: &'static str = Box::leak(
@@ -713,6 +910,8 @@ mod tests {
         );
         let calls = Arc::new(AtomicU64::new(0));
         let counted = calls.clone();
+        let (ready_tx, ready_rx) = bounded(1);
+        let (release_tx, release_rx) = bounded(1);
         let server = std::thread::spawn(move || {
             let until = Instant::now() + Duration::from_secs(5);
             loop {
@@ -748,6 +947,10 @@ mod tests {
                                 .contains("Orion")
                         );
                         counted.fetch_add(1, Ordering::SeqCst);
+                        if cancel {
+                            ready_tx.send(()).unwrap();
+                            release_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+                        }
                         let output = r#"{"claims":[{"scope":"Orion","subject":"deployment","key":"approval","text":"QA approval is pending.","kind":"commitment","evidence":[1],"correction":false}]}"#;
                         let data = serde_json::json!({"choices":[{"delta":{"content":output}}]});
                         let body = format!("data: {data}\n\ndata: [DONE]\n\n");
@@ -785,17 +988,41 @@ mod tests {
         std::thread::sleep(Duration::from_millis(200));
         assert_eq!(calls.load(Ordering::SeqCst), 0);
         learning.allowed(true);
+        let revision = if cancel {
+            ready_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+            let revision = learning.snapshot.read().unwrap().revision;
+            learning.allowed(false);
+            release_tx.send(()).unwrap();
+            revision
+        } else {
+            0
+        };
         let until = Instant::now() + Duration::from_secs(5);
-        while learning.snapshot.read().unwrap().claims.is_empty() && Instant::now() < until {
+        while Instant::now() < until {
+            let s = learning.snapshot.read().unwrap();
+            if if cancel {
+                s.revision > revision && !s.busy
+            } else {
+                !s.claims.is_empty()
+            } {
+                break;
+            }
+            drop(s);
             std::thread::sleep(Duration::from_millis(20));
         }
         assert_eq!(
             learning.snapshot.read().unwrap().claims.len(),
-            1,
+            if cancel { 0 } else { 1 },
             "{}",
             learning.status()
         );
         assert_eq!(calls.load(Ordering::SeqCst), 1);
+        if cancel {
+            let s = learning.snapshot.read().unwrap();
+            assert!(!s.busy);
+            assert!(s.revision > revision);
+            assert_eq!(s.pending, 1);
+        }
         server.join().unwrap();
     }
 }

@@ -174,14 +174,88 @@ const OPENERS: &[&[&str]] = &[
 /// Everything here would otherwise be enrolled as a person by "I'm Sorry" or
 /// "This is Great".
 const NOT_A_NAME: &[&str] = &[
-    "a", "and", "but", "so", "the", "then", "there", "this", "that", "these", "those", "here",
-    "just", "not", "no", "yes", "yeah", "yep", "nope", "ok", "okay", "right", "sure", "sorry",
-    "good", "great", "fine", "well", "hi", "hello", "hey", "thanks", "thank", "please", "we",
-    "you", "i", "he", "she", "it", "they", "my", "your", "our", "his", "her", "their", "monday",
-    "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday", "january", "february",
-    "march", "april", "may", "june", "july", "august", "september", "october", "november",
-    "december", "today", "tomorrow", "yesterday", "morning", "afternoon", "evening", "everyone",
-    "everybody", "all", "both", "one", "two", "actually", "basically", "still", "about",
+    "a",
+    "and",
+    "but",
+    "so",
+    "the",
+    "then",
+    "there",
+    "this",
+    "that",
+    "these",
+    "those",
+    "here",
+    "just",
+    "not",
+    "no",
+    "yes",
+    "yeah",
+    "yep",
+    "nope",
+    "ok",
+    "okay",
+    "right",
+    "sure",
+    "sorry",
+    "good",
+    "great",
+    "fine",
+    "well",
+    "hi",
+    "hello",
+    "hey",
+    "thanks",
+    "thank",
+    "please",
+    "we",
+    "you",
+    "i",
+    "he",
+    "she",
+    "it",
+    "they",
+    "my",
+    "your",
+    "our",
+    "his",
+    "her",
+    "their",
+    "monday",
+    "tuesday",
+    "wednesday",
+    "thursday",
+    "friday",
+    "saturday",
+    "sunday",
+    "january",
+    "february",
+    "march",
+    "april",
+    "may",
+    "june",
+    "july",
+    "august",
+    "september",
+    "october",
+    "november",
+    "december",
+    "today",
+    "tomorrow",
+    "yesterday",
+    "morning",
+    "afternoon",
+    "evening",
+    "everyone",
+    "everybody",
+    "all",
+    "both",
+    "one",
+    "two",
+    "actually",
+    "basically",
+    "still",
+    "about",
 ];
 
 /// A name someone spoke about themselves, whether or not anybody listed it.
@@ -209,7 +283,8 @@ pub fn introduced(text: &str) -> Option<String> {
     for (i, _) in words.iter().enumerate() {
         // "Ahmed here", "Ahmed speaking" — the mirror image, and as safe as the
         // openers because the cue follows rather than precedes the name.
-        if i > 0 && INTRO_AFTER.contains(&low[i].as_str())
+        if i > 0
+            && INTRO_AFTER.contains(&low[i].as_str())
             && let Some(name) = name_at(&words, &low, i.saturating_sub(1))
         {
             return Some(name);
@@ -369,8 +444,14 @@ mod tests {
         /// must not become one person called "Ada And".
         #[test]
         fn a_second_word_joins_only_when_it_is_one() {
-            assert_eq!(introduced("I'm Ada and Grace is on mute").as_deref(), Some("Ada"));
-            assert_eq!(introduced("I'm Ada, the platform lead").as_deref(), Some("Ada"));
+            assert_eq!(
+                introduced("I'm Ada and Grace is on mute").as_deref(),
+                Some("Ada")
+            );
+            assert_eq!(
+                introduced("I'm Ada, the platform lead").as_deref(),
+                Some("Ada")
+            );
             assert_eq!(introduced("I'm Anne-Marie").as_deref(), Some("Anne-Marie"));
             // A comma ends the name. "I'm Ada, the platform lead" above only
             // passed because "the" is in NOT_A_NAME -- a *capitalised* word
@@ -380,9 +461,15 @@ mod tests {
                 introduced("Actually, I'm Priya, Marcus asked me to join").as_deref(),
                 Some("Priya")
             );
-            assert_eq!(introduced("I'm Drew, Sarah's colleague").as_deref(), Some("Drew"));
+            assert_eq!(
+                introduced("I'm Drew, Sarah's colleague").as_deref(),
+                Some("Drew")
+            );
             // Still one name when nothing separates the two words.
-            assert_eq!(introduced("I'm Ada Lovelace").as_deref(), Some("Ada Lovelace"));
+            assert_eq!(
+                introduced("I'm Ada Lovelace").as_deref(),
+                Some("Ada Lovelace")
+            );
         }
 
         /// The cue has to be a word. "Trim" ends in "im" and "him is" contains

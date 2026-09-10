@@ -7,13 +7,21 @@ Update the **Now** block after every work session. Nothing else here is chronolo
 
 ## Now
 
-**Memory architecture (2026-09-10):** implementation proceeds through the
-[task ledger](docs/plans/brain-inspired-memory-ledger.md). Private GitHub
-repository created; ledger and preserved-foundation PRs are open. The current
-foundation passed 158 unit tests and two integration tests. SQLite knowledge
-storage adds evidence fingerprints, atomic extraction, correction history,
-restart-persistent request budgets and source-linked retention. Six focused
-storage tests pass. Background learning and UI integration follow separately.
+**Memory architecture (2026-09-10):** implementation is complete across the
+[task ledger](docs/plans/brain-inspired-memory-ledger.md), with dependent PRs
+in the private `m-altaifi/inner-voice` repository. Review precedes merging.
+SQLite knowledge includes attributed evidence, stable IDs, atomic extraction,
+corrections, retention and restart-persistent request budgets. Background
+learning observes the accepted five-minute/twelve-per-hour limit and mute gate.
+Working context and open items feed scoped retrieval; local panel commands
+inspect, confirm, correct, dismiss and complete items.
+
+[Validation](docs/validation/2026-09-10-memory.md): 184 unit tests and two
+integration tests pass, as do Clippy, formatting, release build and GUI smoke.
+The 100,000-turn synthetic replay retained 20,000 claims and answered 1,000/1,000
+scoped queries at p95 4.56 ms. A 3,602-second M06 paced test crossed hourly context
+rotation and reopened the store. No paid-provider or full-meeting evaluation was
+performed; mouse injection and physical dragging remain outside the GUI evidence.
 
 This extends Decision 6: JSONL remains episode evidence; a derived SQLite store
 supports transactional knowledge revisions. It follows the transcript logging

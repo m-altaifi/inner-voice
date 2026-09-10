@@ -1,0 +1,12 @@
+{
+  "elapsed_seconds": 7.2121795,
+  "exact_scope_answers": 1000,
+  "max_context_bytes": 328,
+  "provider_calls": 0,
+  "queries": 1000,
+  "retained_claims": 20000,
+  "retrieval_max_us": 5380,
+  "retrieval_p95_us": 4561,
+  "synthetic": true,
+  "turns": 100000
+}

@@ -1085,17 +1085,17 @@ impl State {
                 let value = self.edit_buf.trim().to_string();
                 self.edit_buf.clear();
                 self.edit_field = None;
-                if !value.is_empty() {
-                    if let Some(path) = self.session.env_path.clone() {
-                        match config::upsert_env(&path, var, &value) {
-                            Ok(_) => {
-                                if !self.restart_pending.contains(&var) {
-                                    self.restart_pending.push(var);
-                                }
-                                self.notice = format!("{var} updated — restart to apply");
+                if !value.is_empty()
+                    && let Some(path) = self.session.env_path.clone()
+                {
+                    match config::upsert_env(&path, var, &value) {
+                        Ok(_) => {
+                            if !self.restart_pending.contains(&var) {
+                                self.restart_pending.push(var);
                             }
-                            Err(e) => self.notice = format!("couldn't save {var}: {e}"),
+                            self.notice = format!("{var} updated — restart to apply");
                         }
+                        Err(e) => self.notice = format!("couldn't save {var}: {e}"),
                     }
                 }
                 self.return_keyboard();
@@ -1161,7 +1161,7 @@ impl State {
     /// The "restart to apply" tail for a row whose edit is persisted but not
     /// yet live (the `Apply::Restart` settings).
     fn restart_mark(&self, env: &str) -> &'static str {
-        if self.restart_pending.iter().any(|e| *e == env) {
+        if self.restart_pending.contains(&env) {
             "   • restart to apply"
         } else {
             ""
@@ -1197,11 +1197,11 @@ impl State {
             value.clone()
         };
         self.edits.insert(field.env, value.clone());
-        if let Some(path) = self.session.env_path.clone() {
-            if let Err(e) = config::upsert_env(&path, field.env, &persist_val) {
-                self.notice = format!("couldn't save {}: {e}", field.env);
-                return;
-            }
+        if let Some(path) = self.session.env_path.clone()
+            && let Err(e) = config::upsert_env(&path, field.env, &persist_val)
+        {
+            self.notice = format!("couldn't save {}: {e}", field.env);
+            return;
         }
         match (field.apply, field.env) {
             (Apply::Live, "IV_HEAR") => {
