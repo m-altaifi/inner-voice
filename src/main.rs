@@ -14,6 +14,7 @@ mod extract;
 mod history;
 mod hud;
 mod knowledge;
+pub mod learning;
 mod log;
 mod memory;
 pub mod memory_store;
@@ -279,6 +280,10 @@ struct Args {
     #[arg(long, env = "IV_MANUAL")]
     manual: bool,
 
+    /// Learn attributed knowledge from new speech; pauses with muted advice.
+    #[arg(long, env = "IV_LEARNING", value_parser = clap::builder::BoolishValueParser::new())]
+    learning: bool,
+
     /// List the apps with audio on the loopback device and exit
     #[arg(long)]
     list_apps: bool,
@@ -363,6 +368,7 @@ fn build_prompt(persona: &str, corpus: &str) -> String {
 /// the one place every turn passes through exactly once, in order, on a single
 /// thread — so the file's order is the call's order for free.
 struct ContextServices {
+    learning: Option<learning::Learning>,
     agent: Option<agent::Agent>,
     references: references::References,
     research_prompt: String,
@@ -434,6 +440,7 @@ fn route(
     services: ContextServices,
 ) {
     let ContextServices {
+        learning,
         agent,
         references,
         research_prompt,
@@ -485,6 +492,9 @@ fn route(
     // when advice is armed it already knows what has been said. That is the
     // difference from Pause, which stops transcription and writes nothing down.
     let mut coaching = !manual;
+    if let Some(learning) = &learning {
+        learning.allowed(coaching);
+    }
     let _ = tx.send(Msg::Coaching(coaching));
     let mut paused = false;
     // A far-end turn that has earned a request but has not been paid for yet.
@@ -589,6 +599,9 @@ fn route(
         match &m {
             Msg::Coaching(on) => {
                 coaching = *on;
+                if let Some(learning) = &learning {
+                    learning.allowed(coaching && !paused);
+                }
                 if !coaching {
                     owed = None;
                 }
@@ -604,6 +617,9 @@ fn route(
             }
             Msg::Pause(value) => {
                 paused = *value;
+                if let Some(learning) = &learning {
+                    learning.allowed(coaching && !paused);
+                }
                 if paused {
                     owed = None;
                 }
@@ -832,6 +848,9 @@ fn route(
                 .map(|s| s.to_string_lossy().into_owned())
                 .unwrap_or_else(|| "current session (not saved)".into());
             memory.push(people::now(), &source, &who.label(), text);
+            if let Some(learning) = &learning {
+                learning.speech(&source, memory.len() as i64, &who.label(), text);
+            }
             history.push(history::Turn::Speech {
                 who: who.clone(),
                 text: text.clone(),
@@ -1512,6 +1531,13 @@ fn main() -> Result<()> {
     let online = provider.is_some();
     let agent = agent_config.map(|config| agent::Agent::new(config, turn_tx.clone()));
     let model = provider.as_ref().map(|p| p.model.clone());
+    let learning = Some(learning::Learning::new(
+        provider.clone(),
+        log.as_ref().map(|l| l.path().to_path_buf()),
+        args.learning,
+        args.keep_days,
+        ui_tx.clone(),
+    ));
     let coach = provider.map(|p| coach::Coach::new(p, prompt, turn_tx.clone()));
     {
         let (rx, tx) = (turn_rx, ui_tx.clone());
@@ -1531,6 +1557,7 @@ fn main() -> Result<()> {
                 log,
                 roster,
                 ContextServices {
+                    learning,
                     agent,
                     references,
                     research_prompt,
@@ -1899,6 +1926,7 @@ mod tests {
                 roster::Roster::load(std::path::Path::new("no-such-folder")),
                 ContextServices {
                     agent: None,
+                    learning: None,
                     references,
                     research_prompt: String::new(),
                     corpus,
