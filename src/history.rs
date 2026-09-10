@@ -17,6 +17,10 @@ const MAX_RESEARCH: usize = 2_000;
 #[derive(Default)]
 pub struct History(VecDeque<(u64, Turn)>, u64);
 impl History {
+    pub fn reset(&mut self, elapsed: u64) {
+        self.0.clear();
+        self.1 = elapsed;
+    }
     pub fn push(&mut self, turn: Turn) {
         self.push_at(turn, crate::people::now());
     }
@@ -43,8 +47,7 @@ impl History {
         if !self.expired(elapsed) {
             return false;
         }
-        self.0.clear();
-        self.1 = elapsed;
+        self.reset(elapsed);
         true
     }
     pub fn expired(&self, elapsed: u64) -> bool {
