@@ -7,6 +7,15 @@ Update the **Now** block after every work session. Nothing else here is chronolo
 
 ## Now
 
+**PR review follow-up (2026-09-11):** PR #8 now requires complete project names
+and correction phrases in source evidence. An explicit correction returning to
+a superseded value creates a new revision; ordinary repetition stays suppressed,
+and user confirmations and dismissals persist. Three new regressions failed
+before the fixes; all four added tests now pass. The release suite passes 188
+unit tests and both integration tests, plus Clippy, formatting, whitespace and
+the offline release build. All eight PRs remain open for review. See the
+[review validation](docs/validation/2026-09-11-memory-review.md).
+
 **Memory architecture (2026-09-10):** implementation is complete across the
 [task ledger](docs/plans/brain-inspired-memory-ledger.md), with dependent PRs
 in the private `m-altaifi/inner-voice` repository. Review precedes merging.

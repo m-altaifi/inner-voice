@@ -359,8 +359,30 @@ impl Store {
             let subject = normalized(&c.subject);
             let key = normalized(&c.key);
             let text = c.text.trim();
-            let duplicate: Option<i64> = tx.query_row("SELECT id FROM claims WHERE scope=?1 AND subject=?2 AND field=?3 AND text=?4 AND kind=?5 AND origin=?6 ORDER BY id DESC LIMIT 1",
-                params![scope,subject,key,text,c.kind,origin],|r|r.get(0)).optional()?;
+            let explicit_correction = c.correction
+                && first.speaker != "THEM"
+                && c.evidence.iter().any(|id| {
+                    let e = batch.episodes.iter().find(|e| e.id == *id).unwrap();
+                    let t = normalized(&e.text);
+                    speaker_identity(e) == origin
+                        && [
+                            "correction",
+                            "correcting",
+                            "actually",
+                            "has taken over",
+                            "replaces",
+                            "instead of",
+                            "no longer",
+                        ]
+                        .iter()
+                        .any(|s| crate::memory_context::scope_matches(&t, s))
+                });
+            // Ordinary repetition stays attached to its previous revision.
+            // An explicit return to a superseded value needs a new revision;
+            // reusing the hidden row would silently discard the correction.
+            // Dismissed and user-confirmed items still take the duplicate path.
+            let duplicate: Option<i64> = tx.query_row("SELECT id FROM claims WHERE scope=?1 AND subject=?2 AND field=?3 AND text=?4 AND kind=?5 AND origin=?6 AND (status<>'superseded' OR NOT ?7) ORDER BY id DESC LIMIT 1",
+                params![scope,subject,key,text,c.kind,origin,explicit_correction],|r|r.get(0)).optional()?;
             let id = match duplicate {
                 Some(id) => {
                     tx.execute(
@@ -370,24 +392,6 @@ impl Store {
                     id
                 }
                 None => {
-                    let explicit_correction = c.correction
-                        && first.speaker != "THEM"
-                        && c.evidence.iter().any(|id| {
-                            let e = batch.episodes.iter().find(|e| e.id == *id).unwrap();
-                            let t = normalized(&e.text);
-                            speaker_identity(e) == origin
-                                && [
-                                    "correction",
-                                    "correcting",
-                                    "actually",
-                                    "has taken over",
-                                    "replaces",
-                                    "instead of",
-                                    "no longer",
-                                ]
-                                .iter()
-                                .any(|s| t.contains(s))
-                        });
                     if explicit_correction {
                         tx.execute("UPDATE claims SET status='superseded',is_open=0 WHERE scope=?1 AND subject=?2 AND field=?3 AND origin=?4 AND status IN ('reported','disputed')",
                             params![scope,subject,key,origin])?;
@@ -592,10 +596,13 @@ fn validate(c: &Candidate, batch: &ConsolidationBatch) -> Result<()> {
     }
     if !c.scope.trim().is_empty()
         && !c.evidence.iter().any(|id| {
-            batch
-                .episodes
-                .iter()
-                .any(|e| e.id == *id && normalized(&e.text).contains(&normalized(&c.scope)))
+            batch.episodes.iter().any(|e| {
+                e.id == *id
+                    && crate::memory_context::scope_matches(
+                        &normalized(&e.text),
+                        &normalized(&c.scope),
+                    )
+            })
         })
     {
         bail!("project scope must appear in cited speech");
@@ -911,6 +918,197 @@ mod tests {
     pub fn answer(id: i64, text: &str, correction: bool) -> String {
         serde_json::json!({"claims":[{"scope":"Orion","subject":"deployment","key":"owner","text":text,"kind":"fact","evidence":[id],"correction":correction}]}).to_string()
     }
+    #[test]
+    fn project_scope_requires_complete_names_in_cited_speech() {
+        let mut s = Store::open(None).unwrap();
+        s.ingest(
+            "session-a",
+            0,
+            1,
+            "Priya",
+            100,
+            "Orion deployment is pending; (Équipe Nord) owns QA.",
+        )
+        .unwrap();
+        let b = s.batch().unwrap().unwrap();
+        let valid: serde_json::Value =
+            serde_json::from_str(&answer(b.episodes[0].id, "Deployment is pending.", false))
+                .unwrap();
+        for scope in ["Ori", "rion", "Équipe Nor", "quipe Nord"] {
+            let mut invalid = valid.clone();
+            invalid["claims"][0]["scope"] = scope.into();
+            let mut output = valid.clone();
+            output["claims"]
+                .as_array_mut()
+                .unwrap()
+                .push(invalid["claims"][0].clone());
+            assert!(
+                s.apply(&b, &output.to_string(), 101).is_err(),
+                "accepted {scope}"
+            );
+            assert!(s.claims().unwrap().is_empty());
+            assert_eq!(s.counts().unwrap().0, 1);
+        }
+        let mut output = valid;
+        output["claims"][0]["scope"] = "  ÉQUIPE   Nord  ".into();
+        s.apply(&b, &output.to_string(), 101).unwrap();
+        assert_eq!(s.claims().unwrap()[0].scope, "équipe nord");
+    }
+
+    #[test]
+    fn explicit_correction_can_return_to_a_superseded_value() {
+        let mut s = seeded();
+        let b = s.batch().unwrap().unwrap();
+        s.apply(
+            &b,
+            &answer(b.episodes[0].id, "Priya owns deployment.", false),
+            101,
+        )
+        .unwrap();
+        let original = s.claims().unwrap()[0].id;
+        for (position, speech, value, correction) in [
+            (
+                1,
+                "Correction: Orion deployment owner is Alex.",
+                "Alex",
+                true,
+            ),
+            (2, "Orion deployment owner is Priya.", "Priya", false),
+            (
+                3,
+                "Correction: Orion deployment owner is Priya.",
+                "Priya",
+                true,
+            ),
+        ] {
+            s.ingest(
+                "session-a",
+                position,
+                position + 1,
+                "Priya",
+                101 + position,
+                speech,
+            )
+            .unwrap();
+            let b = s.batch().unwrap().unwrap();
+            s.apply(
+                &b,
+                &answer(
+                    b.episodes[0].id,
+                    &format!("{value} owns deployment."),
+                    correction,
+                ),
+                105 + position,
+            )
+            .unwrap();
+            let claims = s.claims().unwrap();
+            assert_eq!(claims.len(), 1);
+            assert_eq!(claims[0].status, "reported");
+            assert_eq!(
+                claims[0].text,
+                if position == 3 {
+                    "Priya owns deployment."
+                } else {
+                    "Alex owns deployment."
+                }
+            );
+            assert_ne!(
+                claims[0].id, original,
+                "a correction must retain the earlier revision"
+            );
+        }
+        assert_eq!(
+            s.conn
+                .query_row("SELECT status FROM claims WHERE id=?1", [original], |r| {
+                    r.get::<_, String>(0)
+                })
+                .unwrap(),
+            "superseded"
+        );
+    }
+
+    #[test]
+    fn correction_cues_require_complete_phrases() {
+        let mut s = seeded();
+        let b = s.batch().unwrap().unwrap();
+        s.apply(
+            &b,
+            &answer(b.episodes[0].id, "Priya owns deployment.", false),
+            101,
+        )
+        .unwrap();
+        s.ingest(
+            "session-a",
+            1,
+            2,
+            "Priya",
+            102,
+            "Factually, Orion deployment owner is Alex.",
+        )
+        .unwrap();
+        let b = s.batch().unwrap().unwrap();
+        s.apply(
+            &b,
+            &answer(b.episodes[0].id, "Alex owns deployment.", true),
+            103,
+        )
+        .unwrap();
+        let claims = s.claims().unwrap();
+        assert_eq!(claims.len(), 2);
+        assert!(claims.iter().all(|c| c.status == "disputed"));
+    }
+
+    #[test]
+    fn automatic_corrections_preserve_user_endorsement_and_dismissal() {
+        for action in ["confirm", "dismiss"] {
+            let mut s = seeded();
+            let b = s.batch().unwrap().unwrap();
+            s.apply(
+                &b,
+                &answer(b.episodes[0].id, "Priya owns deployment.", false),
+                101,
+            )
+            .unwrap();
+            let original = s.claims().unwrap()[0].id;
+            s.edit(original, action, "", 102).unwrap();
+            for (position, value) in [(1, "Alex"), (2, "Priya")] {
+                s.ingest(
+                    "session-a",
+                    position,
+                    position + 1,
+                    "Priya",
+                    102 + position,
+                    &format!("Correction: Orion deployment owner is {value}."),
+                )
+                .unwrap();
+                let b = s.batch().unwrap().unwrap();
+                s.apply(
+                    &b,
+                    &answer(b.episodes[0].id, &format!("{value} owns deployment."), true),
+                    105 + position,
+                )
+                .unwrap();
+            }
+            let claims = s.claims().unwrap();
+            if action == "confirm" {
+                assert_eq!(claims.len(), 2);
+                assert!(
+                    claims
+                        .iter()
+                        .any(|c| c.id == original && c.status == "user_confirmed")
+                );
+                assert!(
+                    claims
+                        .iter()
+                        .any(|c| c.text == "Alex owns deployment." && c.status == "disputed")
+                );
+            } else {
+                assert_eq!(claims.len(), 1);
+                assert_eq!(claims[0].text, "Alex owns deployment.");
+            }
+        }
+    }
+
     #[test]
     fn invalid_reference_rolls_back_whole_batch_and_duplicate_is_rejected() {
         let mut s = seeded();
