@@ -7,6 +7,50 @@ Update the **Now** block after every work session. Nothing else here is chronolo
 
 ## Now
 
+**Reliability follow-up (2026-09-07):** typed questions have explicit answer
+intent and priority over later speech. Silent model responses become visible
+failures on this path. Advice uses an eight-second HTTP limit and expires jobs
+that already waited eight seconds; research retains its longer timeout.
+Interrupted streams clear partial text before completion/logging/TTS. New
+meaningful speech retires automatic advice, including already completed text
+on the HUD, and late messages cannot bring it back. Audio older than eight
+seconds after enqueue is rejected with a notice before/after inference (and
+preserved by `--dump`); dropped turns are absent from transcript and recall.
+Rare-name recall now scores all matching query terms, preserving old specific
+facts despite thousands of generic newer records.
+
+Evidence: `docs/validation/2026-09-07-reliability.md`. Local HTTP fault injection
+covers stalled bodies and recovery, truncated streams, explicit silence,
+expired jobs and cancellation. The 100,000-turn replay again passed 999/999
+recalls, p95 903 microseconds. One configured Gemini request answered the
+explicit audit question in 1.255 seconds and rejected false approval, but
+assumed an unstated review report. This validates response behavior, not
+factual accuracy; spontaneous spoken questions still use automatic judgment.
+
+**Hourly context, recall, interruption control and stress (2026-09-07):**
+`history` now rotates the live window every monotonic hour. `route` cancels old
+generations and the panel clears stale advice/research. `memory` indexes bounded,
+attributed speech from existing transcript logs (no second private store), with
+selective local recall before advice/research and `/recall <topic>` for a silent
+local pane. Generated advice/research never becomes remembered speech.
+
+`wisdom` preserves short consequential answers, suppresses routine chatter, and
+filters streamed `SILENT` markers before display/TTS. The router suppresses exact
+repeat triggers for 30 seconds, clears unspent requests on pause/mute/question,
+and measures settlement from speech rather than unrelated channel messages.
+Capture queues are bounded to four utterances with visible oldest-item loss.
+
+Evidence and unresolved model failures:
+`docs/validation/2026-09-07-stress.md`. Final GPU pressure: 1,009 decodes in two
+minutes; synthetic normalized WER 0% clean / 0.99% noisy. Accelerated memory:
+100,000 turns, 138 hourly resets, 999/999 exact-topic recalls. Seventeen synthetic
+Gemini requests exposed unnecessary interruption, a bad base-rate calculation,
+and over-silence on a wording request. The quantitative guidance improved the
+targeted scientific retest; over-silence remains. These are not human-call or
+multi-hour wall-clock results. The older test counts and latency budget below
+are historical, and the 800 ms settlement window must be included in end-to-end
+latency claims.
+
 **Vigilance and mindfulness (2026-09-07):** the panel advised on what it heard
 and never on what the user said. `FIX` — the one tag written for the user's own
 vague or oversold line — could only ride along with the far end's *next* turn,

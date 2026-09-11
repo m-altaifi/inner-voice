@@ -57,6 +57,29 @@ after the script name is forwarded to cargo.
 
 ## Architecture
 
+Current context/recall behavior (2026-09-07): `history` retains 24 live turns
+and rotates hourly using monotonic elapsed time. `memory` retrieves attributed
+earlier speech from a bounded local index of existing logs; no extra model call
+or second private store. `IV_LOG=` disables cross-process recall. `/recall`
+displays a dedicated pane without TTS. `wisdom` filters real silence markers and
+preserves short consequential answers. The audio queue is now bounded to four
+utterances with oldest-item eviction and an overload notice. Tests and measured
+limits are in `docs/validation/2026-09-07-stress.md`; do not describe synthetic
+WER or accelerated session replay as real-call accuracy or a live soak.
+
+Reliability follow-up: typed questions use `Coach::ask_explicit` and hold
+priority over automatic turns until completion/failure. Provider silence on
+that path is a visible failure. `AdviceFailed` precedes `AdviceEnd`, clearing
+partial text before logging/TTS; `AdviceRetired` filters late messages and
+clears completed visible advice through `displayed_seq`. Advice HTTP work and
+queue expiry each have an eight-second limit (not one combined deadline).
+Research retains 60 seconds. Audio older than eight seconds after utterance
+enqueue is rejected before and after inference, with a notice and optional
+dump; this intentionally loses transcript/recall under overload, including
+slow CPU inference. Recall rescoring includes common query terms even when
+their posting-list tails excluded an old candidate found by a rare name.
+Evidence: `docs/validation/2026-09-07-reliability.md`.
+
 UX update: the HUD is an **eframe/egui** overlay (`eframe` with the `glow`
 backend; no Win32 window class or child control is left). It is one page, not a
 view-switcher: status line, advice, conversation and question box are on screen

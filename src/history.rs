@@ -15,9 +15,12 @@ pub enum Turn {
 const MAX_RESEARCH: usize = 2_000;
 
 #[derive(Default)]
-pub struct History(VecDeque<Turn>);
+pub struct History(VecDeque<(u64, Turn)>, u64);
 impl History {
-    pub fn push(&mut self, mut turn: Turn) {
+    pub fn push(&mut self, turn: Turn) {
+        self.push_at(turn, crate::people::now());
+    }
+    pub fn push_at(&mut self, mut turn: Turn, time: u64) {
         if let Turn::Research { text, .. } = &mut turn
             && text.len() > MAX_RESEARCH
         {
@@ -29,10 +32,31 @@ impl History {
             text.truncate(end);
             text.push_str("… (truncated)");
         }
-        self.0.push_back(turn);
+        self.0.push_back((time, turn));
         while self.0.len() > 24 {
             self.0.pop_front();
         }
+    }
+    /// Monotonic elapsed seconds, supplied by the router; wall-clock corrections
+    /// cannot resurrect old context or prevent an hourly refresh.
+    pub fn rotate(&mut self, elapsed: u64) -> bool {
+        if !self.expired(elapsed) {
+            return false;
+        }
+        self.0.clear();
+        self.1 = elapsed;
+        true
+    }
+    pub fn expired(&self, elapsed: u64) -> bool {
+        elapsed.saturating_sub(self.1) >= 3600
+    }
+    pub fn remaining(&self, elapsed: u64) -> u64 {
+        3600u64
+            .saturating_sub(elapsed.saturating_sub(self.1))
+            .max(1)
+    }
+    pub fn oldest_time(&self) -> u64 {
+        self.0.front().map(|r| r.0).unwrap_or(u64::MAX)
     }
     /// Whether the user has spoken inside the window the model is shown.
     ///
@@ -46,13 +70,13 @@ impl History {
     pub fn user_spoke(&self) -> bool {
         self.0
             .iter()
-            .any(|t| matches!(t, Turn::Speech { who: Who::You, .. }))
+            .any(|(_, t)| matches!(t, Turn::Speech { who: Who::You, .. }))
     }
 
     pub fn render(&self) -> String {
         self.0
             .iter()
-            .map(|turn| match turn {
+            .map(|(_, turn)| match turn {
                 // Quote data so a newline spoken or returned by a tool cannot
                 // impersonate another transcript speaker or a system instruction.
                 Turn::Speech { who, text } => {
@@ -71,6 +95,26 @@ impl History {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn exactly_one_hour_retires_context_without_carrying_awareness_forward() {
+        let mut h = History::default();
+        h.push_at(
+            Turn::Speech {
+                who: Who::You,
+                text: "Orion cash decision".into(),
+            },
+            100,
+        );
+        assert!(!h.rotate(3599));
+        assert!(h.user_spoke());
+        assert!(h.rotate(3600));
+        assert!(!h.user_spoke());
+        assert!(h.render().is_empty());
+        assert!(!h.rotate(3601));
+        assert_eq!(h.remaining(3601), 3599);
+        assert!(h.rotate(10_800));
+        assert_eq!(h.remaining(10_800), 3600);
+    }
     #[test]
     fn bounds_context_and_preserves_speaker_boundaries() {
         let mut h = History::default();

@@ -1,0 +1,6 @@
+{
+  "answer": "SAY We cannot approve the audit until the final review report is delivered.\nASK When will the audit review report be delivered?",
+  "elapsed_ms": 1255,
+  "model": "gemini-3.5-flash-lite",
+  "provider": "gemini"
+}

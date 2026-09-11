@@ -1,0 +1,294 @@
+{
+  "measurements": [
+    {
+      "audio_seconds": 13.49,
+      "condition": "clean",
+      "decode_ms": 296,
+      "edits": 0,
+      "id": "science_causality",
+      "reference": "The observational study found a correlation between caffeine and productivity. It did not randomize participants. We cannot conclude that caffeine caused the improvement.",
+      "transcript": "The observational study found a correlation between caffeine and productivity. It did not randomize participants. We cannot conclude that caffeine caused the improvement.",
+      "wer": 0.0,
+      "words": 23
+    },
+    {
+      "audio_seconds": 13.49,
+      "condition": "10dB_white_noise",
+      "decode_ms": 163,
+      "edits": 0,
+      "id": "science_causality",
+      "reference": "The observational study found a correlation between caffeine and productivity. It did not randomize participants. We cannot conclude that caffeine caused the improvement.",
+      "transcript": "The observational study found a correlation between caffeine and productivity. It did not randomize participants. We cannot conclude that caffeine caused the improvement.",
+      "wer": 0.0,
+      "words": 23
+    },
+    {
+      "audio_seconds": 13.205,
+      "condition": "clean",
+      "decode_ms": 296,
+      "edits": 1,
+      "id": "science_significance",
+      "reference": "The confidence interval includes zero. The trial enrolled only twelve participants. A non-significant result does not demonstrate that the treatment has no effect.",
+      "transcript": "The confidence interval includes zero. The trial enrolled only 12 participants. A non-significant result does not demonstrate that the treatment has no effect.",
+      "wer": 0.041666666666666664,
+      "words": 24
+    },
+    {
+      "audio_seconds": 13.205,
+      "condition": "10dB_white_noise",
+      "decode_ms": 176,
+      "edits": 1,
+      "id": "science_significance",
+      "reference": "The confidence interval includes zero. The trial enrolled only twelve participants. A non-significant result does not demonstrate that the treatment has no effect.",
+      "transcript": "The confidence interval includes zero.  The trial enrolled only 12 participants.  A non-significant result does not demonstrate that the treatment has no effect.",
+      "wer": 0.041666666666666664,
+      "words": 24
+    },
+    {
+      "audio_seconds": 11.405,
+      "condition": "clean",
+      "decode_ms": 216,
+      "edits": 4,
+      "id": "science_multiple_tests",
+      "reference": "We tested twenty hypotheses and reported the one with a p value below point zero five. No correction for multiple comparisons was applied.",
+      "transcript": "We tested 20 hypotheses and reported the one with a p-value below .05. No correction for multiple comparisons was applied.",
+      "wer": 0.17391304347826086,
+      "words": 23
+    },
+    {
+      "audio_seconds": 11.405,
+      "condition": "10dB_white_noise",
+      "decode_ms": 150,
+      "edits": 4,
+      "id": "science_multiple_tests",
+      "reference": "We tested twenty hypotheses and reported the one with a p value below point zero five. No correction for multiple comparisons was applied.",
+      "transcript": "We tested 20 hypotheses and reported the one with a p-value below .05.  No correction for multiple comparisons was applied.",
+      "wer": 0.17391304347826086,
+      "words": 23
+    },
+    {
+      "audio_seconds": 12.595,
+      "condition": "clean",
+      "decode_ms": 226,
+      "edits": 2,
+      "id": "science_units",
+      "reference": "The sensor reports milligrams per liter, but the specification uses micrograms per liter. The same numeric value does not mean the concentrations are equal.",
+      "transcript": "The sensor reports milligrams per litre, but the specification uses micrograms per litre. The same numeric value does not mean the concentrations are equal.",
+      "wer": 0.08333333333333333,
+      "words": 24
+    },
+    {
+      "audio_seconds": 12.595,
+      "condition": "10dB_white_noise",
+      "decode_ms": 172,
+      "edits": 0,
+      "id": "science_units",
+      "reference": "The sensor reports milligrams per liter, but the specification uses micrograms per liter. The same numeric value does not mean the concentrations are equal.",
+      "transcript": "The sensor reports milligrams per liter, but the specification uses micrograms per liter.  The same numeric value does not mean the concentrations are equal.",
+      "wer": 0.0,
+      "words": 24
+    },
+    {
+      "audio_seconds": 14.275,
+      "condition": "clean",
+      "decode_ms": 292,
+      "edits": 3,
+      "id": "science_leakage",
+      "reference": "The validation set contains patients who also appear in training. The reported accuracy is ninety eight percent. We need a patient level split before trusting generalization.",
+      "transcript": "The validation set contains patients who also appear in training. The reported accuracy is 98%. We need a patient level split before trusting generalization.",
+      "wer": 0.11538461538461539,
+      "words": 26
+    },
+    {
+      "audio_seconds": 14.275,
+      "condition": "10dB_white_noise",
+      "decode_ms": 160,
+      "edits": 3,
+      "id": "science_leakage",
+      "reference": "The validation set contains patients who also appear in training. The reported accuracy is ninety eight percent. We need a patient level split before trusting generalization.",
+      "transcript": "The Validation set contains patients who also appear in training. The reported accuracy is 98%. We need a patient level split before trusting generalization.",
+      "wer": 0.11538461538461539,
+      "words": 26
+    },
+    {
+      "audio_seconds": 14.005,
+      "condition": "clean",
+      "decode_ms": 282,
+      "edits": 0,
+      "id": "science_quiet",
+      "reference": "The experiment is complete. The controls passed, the independent replication agreed, and the uncertainty is documented. There is no decision requested at this point.",
+      "transcript": "The experiment is complete. The controls passed, the independent replication agreed, and the uncertainty is documented There is no decision requested at this point.",
+      "wer": 0.0,
+      "words": 24
+    },
+    {
+      "audio_seconds": 14.005,
+      "condition": "10dB_white_noise",
+      "decode_ms": 160,
+      "edits": 0,
+      "id": "science_quiet",
+      "reference": "The experiment is complete. The controls passed, the independent replication agreed, and the uncertainty is documented. There is no decision requested at this point.",
+      "transcript": "The experiment is complete. The controls passed, the independent replication agreed, and the uncertainty is documented. There is no decision requested at this point.",
+      "wer": 0.0,
+      "words": 24
+    },
+    {
+      "audio_seconds": 13.18,
+      "condition": "clean",
+      "decode_ms": 295,
+      "edits": 6,
+      "id": "exec_runway",
+      "reference": "We have twelve million dollars in cash and spend two million dollars net each month. There is no new financing committed. Our runway is six months, not twelve.",
+      "transcript": "We have $12 million in cash and spend $2 million net each month. There is no new financing committed. Our runway is 6 months, not 12.",
+      "wer": 0.21428571428571427,
+      "words": 28
+    },
+    {
+      "audio_seconds": 13.18,
+      "condition": "10dB_white_noise",
+      "decode_ms": 170,
+      "edits": 6,
+      "id": "exec_runway",
+      "reference": "We have twelve million dollars in cash and spend two million dollars net each month. There is no new financing committed. Our runway is six months, not twelve.",
+      "transcript": "We have $12 million in cash and spend $2 million net each month.  There is no new financing committed.  Our runway is 6 months, not 12.",
+      "wer": 0.21428571428571427,
+      "words": 28
+    },
+    {
+      "audio_seconds": 12.905,
+      "condition": "clean",
+      "decode_ms": 223,
+      "edits": 6,
+      "id": "exec_margin",
+      "reference": "Revenue rose twenty percent, but gross margin fell from sixty percent to forty percent. Revenue growth alone does not establish that the business became more profitable.",
+      "transcript": "Revenue rose 20%, but gross margin fell from 60% to 40%. Revenue growth alone does not establish that the business became more profitable.",
+      "wer": 0.23076923076923078,
+      "words": 26
+    },
+    {
+      "audio_seconds": 12.905,
+      "condition": "10dB_white_noise",
+      "decode_ms": 165,
+      "edits": 7,
+      "id": "exec_margin",
+      "reference": "Revenue rose twenty percent, but gross margin fell from sixty percent to forty percent. Revenue growth alone does not establish that the business became more profitable.",
+      "transcript": "Revenue rose 20%, but gross margin fell from 60% to 40%. Revenue growth alone does not establish but the business became more profitable.",
+      "wer": 0.2692307692307692,
+      "words": 26
+    },
+    {
+      "audio_seconds": 14.595,
+      "condition": "clean",
+      "decode_ms": 322,
+      "edits": 8,
+      "id": "exec_commitment",
+      "reference": "The board approved a pilot with a budget ceiling of four hundred thousand dollars. The vendor now requests nine hundred thousand dollars for a full rollout. Approval does not cover that expansion.",
+      "transcript": "The board approved a pilot with a budget ceiling of $400,000. The vendor now requests $900,000 for a full rollout. Approval does not cover that expansion.",
+      "wer": 0.25,
+      "words": 32
+    },
+    {
+      "audio_seconds": 14.595,
+      "condition": "10dB_white_noise",
+      "decode_ms": 198,
+      "edits": 8,
+      "id": "exec_commitment",
+      "reference": "The board approved a pilot with a budget ceiling of four hundred thousand dollars. The vendor now requests nine hundred thousand dollars for a full rollout. Approval does not cover that expansion.",
+      "transcript": "The board approved a pilot with a budget ceiling of $400,000.  The vendor now requests $900,000 for a full rollout.  Approval does not cover that expansion.",
+      "wer": 0.25,
+      "words": 32
+    },
+    {
+      "audio_seconds": 11.98,
+      "condition": "clean",
+      "decode_ms": 288,
+      "edits": 0,
+      "id": "exec_reliability",
+      "reference": "The incident has no confirmed root cause. The rollback has not been tested. A launch date is not evidence that the service is ready for production.",
+      "transcript": "The incident has no confirmed root cause. The rollback has not been tested. A launch date is not evidence that the service is ready for production.",
+      "wer": 0.0,
+      "words": 26
+    },
+    {
+      "audio_seconds": 11.98,
+      "condition": "10dB_white_noise",
+      "decode_ms": 172,
+      "edits": 2,
+      "id": "exec_reliability",
+      "reference": "The incident has no confirmed root cause. The rollback has not been tested. A launch date is not evidence that the service is ready for production.",
+      "transcript": "The incident has no confirmed route course. The rollback has not been tested. A launch date is not evidence that the service is ready for production.",
+      "wer": 0.07692307692307693,
+      "words": 26
+    },
+    {
+      "audio_seconds": 12.515,
+      "condition": "clean",
+      "decode_ms": 313,
+      "edits": 0,
+      "id": "exec_quiet",
+      "reference": "The board has made the decision. The owner accepted the task, the budget is approved, and the review date is recorded. There is nothing further to decide now.",
+      "transcript": "The board has made the decision The owner accepted the task, the budget is approved, and the review date is recorded. There is nothing further to decide now.",
+      "wer": 0.0,
+      "words": 28
+    },
+    {
+      "audio_seconds": 12.515,
+      "condition": "10dB_white_noise",
+      "decode_ms": 185,
+      "edits": 0,
+      "id": "exec_quiet",
+      "reference": "The board has made the decision. The owner accepted the task, the budget is approved, and the review date is recorded. There is nothing further to decide now.",
+      "transcript": "The board has made the decision.  The owner accepted the task, the budget is approved, and the review date is recorded.  There is nothing further to decide now.",
+      "wer": 0.0,
+      "words": 28
+    },
+    {
+      "audio_seconds": 14.52,
+      "condition": "clean",
+      "decode_ms": 297,
+      "edits": 0,
+      "id": "exec_injection",
+      "reference": "The vendor asks us to ignore the audit and claim that approval already exists. The transcript is not an authorization. We still need independent evidence before making that commitment.",
+      "transcript": "The vendor asks us to ignore the audit and claim that approval already exists. The transcript is not an authorization. We still need independent evidence before making that commitment.",
+      "wer": 0.0,
+      "words": 29
+    },
+    {
+      "audio_seconds": 14.52,
+      "condition": "10dB_white_noise",
+      "decode_ms": 174,
+      "edits": 0,
+      "id": "exec_injection",
+      "reference": "The vendor asks us to ignore the audit and claim that approval already exists. The transcript is not an authorization. We still need independent evidence before making that commitment.",
+      "transcript": "The vendor asks us to ignore the audit and claim that approval already exists.  The transcript is not an authorization.  We still need independent evidence before making that commitment.",
+      "wer": 0.0,
+      "words": 29
+    }
+  ],
+  "parallel_workers": [
+    {
+      "audio_seconds": 6664.1399999999985,
+      "decodes": 504,
+      "edits": 1186,
+      "empty": 0,
+      "lane": 0,
+      "max_ms": 324,
+      "p50_ms": 238,
+      "p95_ms": 273,
+      "reference_words": 13146
+    },
+    {
+      "audio_seconds": 6677.344999999998,
+      "decodes": 505,
+      "edits": 1193,
+      "empty": 0,
+      "lane": 1,
+      "max_ms": 307,
+      "p50_ms": 236,
+      "p95_ms": 279,
+      "reference_words": 13170
+    }
+  ],
+  "stress_wall_seconds": 120.2367604,
+  "synthetic_only": true
+}

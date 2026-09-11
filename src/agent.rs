@@ -85,8 +85,9 @@ impl Agent {
     // No `Drop`: the Agent is moved into a detached thread that is never joined,
     // so a destructor could not run at exit anyway. The process tree dies with
     // the job handle (JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE) when the OS closes it.
-    pub fn cancel(&self) {
+    pub fn cancel(&self) -> u64 {
         self.cancel.store(true, Ordering::SeqCst);
+        self.seq.load(Ordering::SeqCst)
     }
 }
 
