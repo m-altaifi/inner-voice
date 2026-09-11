@@ -676,6 +676,8 @@ impl State {
                         || text.starts_with("knowledge")
                         || text.starts_with("session:")
                         || text.starts_with("memory:")
+                        || text.starts_with("Memory #")
+                        || text.starts_with("learning:")
                         || text.starts_with("audio overload:")
                     {
                         self.notice = text.clone();
@@ -1949,6 +1951,27 @@ mod tests {
         assert!(!panel.thinking);
         assert!(panel.config_bool("IV_LEARNING"));
         assert!(panel.status_line().contains("learning paused"));
+    }
+
+    #[test]
+    fn memory_edit_results_and_learning_errors_reach_the_notice() {
+        let (mut panel, tx) = message_panel();
+        panel.advice = "NOTE Existing advice.".into();
+        panel.view = MEMORY;
+        panel.memory_text = "Requested confirm for #1. Check the result notice.".into();
+        for result in [
+            "Memory #1: confirm applied. Original transcripts remain.",
+            "learning: no learned item with that ID",
+            "learning: command queue unavailable/full; the operation was not applied",
+        ] {
+            tx.send(Msg::Sys(result.into())).unwrap();
+            panel.pump();
+            assert_eq!(panel.notice, result);
+            assert_eq!(panel.diagnostics.back().map(String::as_str), Some(result));
+            assert_eq!(panel.view, MEMORY);
+            assert_eq!(panel.advice, "NOTE Existing advice.");
+            assert!(!panel.thinking);
+        }
     }
 
     #[test]

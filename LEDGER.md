@@ -7,6 +7,14 @@ Update the **Now** block after every work session. Nothing else here is chronolo
 
 ## Now
 
+**Merge preparation (2026-09-11):** the user authorized merging all eight PRs
+into `main` after fixes. Final review also fixed hidden memory edit results and
+learning errors in the notice line. The new regression failed before the fix;
+189 unit tests, both integration tests, Clippy, formatting, whitespace, release
+build and the full memory GUI smoke now pass. Injected-click focus behavior
+passed; the physical drag gesture remains a manual check. The final evidence
+is in the [review validation](docs/validation/2026-09-11-memory-review.md).
+
 **PR review follow-up (2026-09-11):** PR #8 now requires complete project names
 and correction phrases in source evidence. An explicit correction returning to
 a superseded value creates a new revision; ordinary repetition stays suppressed,
