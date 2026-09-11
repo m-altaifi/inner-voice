@@ -20,6 +20,7 @@ pub const EXTRACTION_PROMPT: &str = r#"Extract durable, attributed information f
 #[derive(Clone, Default)]
 pub struct Snapshot {
     pub claims: Vec<KnowledgeClaim>,
+    pub index: crate::memory_context::Index,
     pub pending: i64,
     pub failed: i64,
     pub last_success: i64,
@@ -58,6 +59,12 @@ pub struct Learning {
 }
 
 impl Learning {
+    pub fn context(&self, query: &str, session: &str) -> String {
+        self.snapshot
+            .try_read()
+            .map(|s| s.index.render(&s.claims, query, session))
+            .unwrap_or_default()
+    }
     pub fn new(
         provider: Option<Provider>,
         session: Option<PathBuf>,
@@ -329,9 +336,11 @@ fn worker(rx: Receiver<Command>, c: &WorkerConfig) -> Result<()> {
         }
         if dirty {
             let claims = store.claims()?;
+            let index = crate::memory_context::Index::new(&claims);
             serial += 1;
             if let Ok(mut s) = c.snapshot.write() {
                 s.claims = claims;
+                s.index = index;
                 s.revision = serial;
             }
             dirty = false;

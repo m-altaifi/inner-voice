@@ -17,6 +17,7 @@ mod knowledge;
 pub mod learning;
 mod log;
 mod memory;
+pub mod memory_context;
 pub mod memory_store;
 mod people;
 mod process;
@@ -452,6 +453,10 @@ fn route(
         loopback,
     } = services;
     let mut history = history::History::default();
+    let session_source = log
+        .as_ref()
+        .map(|l| l.path().to_string_lossy().into_owned())
+        .unwrap_or_else(|| "current session (not saved)".into());
     let mut memory = memory::Memory::load(log.as_ref().and_then(|l| l.path().parent()));
     let _ = tx.send(Msg::Sys(format!(
         "memory: {} earlier speech excerpts available; {} unreadable records/files",
@@ -550,7 +555,7 @@ fn route(
             && let (Some(coach), Some((mine, text, _))) = (&coach, owed.take())
         {
             coach.ask(format!(
-                "{}{}{}{}",
+                "{}{}{}{}{}",
                 situation(
                     &tune,
                     history.user_spoke(),
@@ -559,6 +564,10 @@ fn route(
                     &said
                 ),
                 memory.recall(&text, history.oldest_time()),
+                learning
+                    .as_ref()
+                    .map(|l| l.context(&text, &session_source))
+                    .unwrap_or_default(),
                 history.render(),
                 references.retrieve(&text)
             ));
@@ -691,7 +700,7 @@ fn route(
                 refresh_corpus(&mut corpus, &mut roster, &persona, &coach, &tune, &tx);
                 if let Some(coach) = &coach {
                     explicit_advice = coach.ask_explicit(format!(
-                        "{}{}{}{}\n\nUser question: {}",
+                        "{}{}{}{}{}\n\nUser question: {}",
                         situation(
                             &tune,
                             history.user_spoke(),
@@ -700,6 +709,10 @@ fn route(
                             &said,
                         ),
                         memory.recall(question, history.oldest_time()),
+                        learning
+                            .as_ref()
+                            .map(|l| l.context(question, &session_source))
+                            .unwrap_or_default(),
                         history.render(),
                         references.retrieve(question),
                         serde_json::json!(question)
@@ -715,8 +728,12 @@ fn route(
             Msg::Research => {
                 refresh_corpus(&mut corpus, &mut roster, &persona, &coach, &tune, &tx);
                 let transcript = format!(
-                    "{}{}",
+                    "{}{}{}",
                     memory.recall(&last_them, history.oldest_time()),
+                    learning
+                        .as_ref()
+                        .map(|l| l.context(&last_them, &session_source))
+                        .unwrap_or_default(),
                     history.render()
                 );
                 if let Some(agent) = &agent {
