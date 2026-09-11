@@ -490,6 +490,9 @@ mod tests {
         // It rides the scoped thread beside CAM++ (54 ms) and whisper (~100 ms),
         // so it is free only while it stays under them. A regression here is a
         // regression in time to first word.
-        assert!(worst < 100, "segmentation cost {worst} ms, budget is whisper");
+        assert!(
+            worst < 100,
+            "segmentation cost {worst} ms, budget is whisper"
+        );
     }
 }

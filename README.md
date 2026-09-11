@@ -254,7 +254,13 @@ automatically imported into this new store; `/recall` retains its original behav
 With `IV_LOG=` empty, knowledge is bounded to the current process and no persistent
 database is read or written. The existing retention setting also applies to source
 evidence and its derived knowledge. Deleting the final supporting source removes
-the learned claim; dismissal alone does not delete a transcript.
+the learned claim; dismissal alone does not delete a transcript. The worker
+rechecks registered sources each second: changed source evidence removes that
+source's derived claims and resumes at its current end. Invalid individual
+records are skipped with a visible notice; an unreadable or oversized source is
+quarantined without blocking healthy sources. Repair it and restart to resume.
+Displayed item IDs are not reused after deletion. Enabling learning partway
+through a session starts at the enable point.
 
 Extracted claims are reported evidence, not verified facts. A user confirmation
 means endorsement, not independent verification. Conflicting claims remain
@@ -270,6 +276,10 @@ context; durable open items remain available when relevant. Preview mode include
 synthetic examples of the new panes without persistence or online requests.
 For a reproducible view, run `inner-voice.exe --preview --preview-command /memory`
 (also `/awareness`, `/commitments`, or `/learning`).
+Run `powershell -NoProfile -File .\tools\memory_ui_smoke.ps1` after a release
+build to exercise the existing hotkeys and all four synthetic panes.
+Storage, fault and performance results are recorded in the
+[memory validation report](docs/validation/2026-09-10-memory.md).
 
 The borderless panel is one page: a status line, the advice, the conversation,
 and a one-line question box, all visible at once. Advice answers the last turn,

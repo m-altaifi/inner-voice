@@ -1,0 +1,11 @@
+{
+  "claims": 1,
+  "context_rotations": 1,
+  "evidence": "paced synthetic JSONL, real SQLite, real monotonic context clock; extraction responses supplied by fixture; capture and GUI assessed separately",
+  "pending_records": 0,
+  "provider_calls": 0,
+  "reserved_slots": 13,
+  "speech_turns": 721,
+  "store_reopened": true,
+  "wall_seconds": 3602.0567178
+}

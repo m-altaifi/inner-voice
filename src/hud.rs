@@ -676,6 +676,8 @@ impl State {
                         || text.starts_with("knowledge")
                         || text.starts_with("session:")
                         || text.starts_with("memory:")
+                        || text.starts_with("Memory #")
+                        || text.starts_with("learning:")
                         || text.starts_with("audio overload:")
                     {
                         self.notice = text.clone();
@@ -1085,17 +1087,17 @@ impl State {
                 let value = self.edit_buf.trim().to_string();
                 self.edit_buf.clear();
                 self.edit_field = None;
-                if !value.is_empty() {
-                    if let Some(path) = self.session.env_path.clone() {
-                        match config::upsert_env(&path, var, &value) {
-                            Ok(_) => {
-                                if !self.restart_pending.contains(&var) {
-                                    self.restart_pending.push(var);
-                                }
-                                self.notice = format!("{var} updated — restart to apply");
+                if !value.is_empty()
+                    && let Some(path) = self.session.env_path.clone()
+                {
+                    match config::upsert_env(&path, var, &value) {
+                        Ok(_) => {
+                            if !self.restart_pending.contains(&var) {
+                                self.restart_pending.push(var);
                             }
-                            Err(e) => self.notice = format!("couldn't save {var}: {e}"),
+                            self.notice = format!("{var} updated — restart to apply");
                         }
+                        Err(e) => self.notice = format!("couldn't save {var}: {e}"),
                     }
                 }
                 self.return_keyboard();
@@ -1161,7 +1163,7 @@ impl State {
     /// The "restart to apply" tail for a row whose edit is persisted but not
     /// yet live (the `Apply::Restart` settings).
     fn restart_mark(&self, env: &str) -> &'static str {
-        if self.restart_pending.iter().any(|e| *e == env) {
+        if self.restart_pending.contains(&env) {
             "   • restart to apply"
         } else {
             ""
@@ -1197,11 +1199,11 @@ impl State {
             value.clone()
         };
         self.edits.insert(field.env, value.clone());
-        if let Some(path) = self.session.env_path.clone() {
-            if let Err(e) = config::upsert_env(&path, field.env, &persist_val) {
-                self.notice = format!("couldn't save {}: {e}", field.env);
-                return;
-            }
+        if let Some(path) = self.session.env_path.clone()
+            && let Err(e) = config::upsert_env(&path, field.env, &persist_val)
+        {
+            self.notice = format!("couldn't save {}: {e}", field.env);
+            return;
         }
         match (field.apply, field.env) {
             (Apply::Live, "IV_HEAR") => {
@@ -1949,6 +1951,27 @@ mod tests {
         assert!(!panel.thinking);
         assert!(panel.config_bool("IV_LEARNING"));
         assert!(panel.status_line().contains("learning paused"));
+    }
+
+    #[test]
+    fn memory_edit_results_and_learning_errors_reach_the_notice() {
+        let (mut panel, tx) = message_panel();
+        panel.advice = "NOTE Existing advice.".into();
+        panel.view = MEMORY;
+        panel.memory_text = "Requested confirm for #1. Check the result notice.".into();
+        for result in [
+            "Memory #1: confirm applied. Original transcripts remain.",
+            "learning: no learned item with that ID",
+            "learning: command queue unavailable/full; the operation was not applied",
+        ] {
+            tx.send(Msg::Sys(result.into())).unwrap();
+            panel.pump();
+            assert_eq!(panel.notice, result);
+            assert_eq!(panel.diagnostics.back().map(String::as_str), Some(result));
+            assert_eq!(panel.view, MEMORY);
+            assert_eq!(panel.advice, "NOTE Existing advice.");
+            assert!(!panel.thinking);
+        }
     }
 
     #[test]

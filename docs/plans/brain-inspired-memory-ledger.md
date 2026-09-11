@@ -3,7 +3,8 @@
 Accepted 2026-09-10. Automatic attributed learning starts with new sessions;
 existing transcripts keep their original local recall behavior. Learning uses
 the configured provider, at most once every five minutes / twelve requests per
-rolling hour, and pauses when advice is muted. No automatic merging of PRs.
+rolling hour, and pauses when advice is muted. On 2026-09-11 the user authorized
+merging the completed PR stack into `main` after fixes and validation.
 
 ## Delivery
 
@@ -18,9 +19,9 @@ uncommitted work. Stacked PRs target their immediate dependency. Statuses are
 | M03 | `03-store`: SQLite knowledge and provenance | M02 | in_review | six storage tests pass | [PR 3](https://github.com/m-altaifi/inner-voice/pull/3) |
 | M04 | `04-learning`: bounded background consolidation | M03 | in_review | two worker tests pass, including actual local HTTP and mute gating | [PR 4](https://github.com/m-altaifi/inner-voice/pull/4) |
 | M05 | `05-retrieval`: revisions and contextual recall | M04 | in_review | nine store/retrieval tests pass; scope and 4 KB limits verified | [PR 5](https://github.com/m-altaifi/inner-voice/pull/5) |
-| M06 | `06-awareness`: working memory and open items | M05 | in_review | full release suite passes; paced hour running separately | [PR 6](https://github.com/m-altaifi/inner-voice/pull/6) |
-| M07 | `07-controls`: inspect and correct memory | M06 | in_review | 174 unit + 2 integration tests; GUI smoke and all four preview panes pass | PR pending |
-| M08 | `08-validation`: retention and release evidence | M07 | planned | fault tests, 100k replay, paced hour, restart, release checks | pending |
+| M06 | `06-awareness`: working memory and open items | M05 | in_review | full release suite passes; 3,602-second paced run passes with rotation and store reopen | [PR 6](https://github.com/m-altaifi/inner-voice/pull/6) |
+| M07 | `07-controls`: inspect and correct memory | M06 | in_review | 174 unit + 2 integration tests; GUI smoke and all four preview panes pass | [PR 7](https://github.com/m-altaifi/inner-voice/pull/7) |
+| M08 | `08-validation`: retention and release evidence | M07 | in_review | 189 unit + 2 integration tests; scope/correction and notice fixes, final GUI smoke pass; prior 100k replay p95 4.56 ms and paced hour recorded | [PR 8](https://github.com/m-altaifi/inner-voice/pull/8), [validation report](../validation/2026-09-10-memory.md), [review follow-up](../validation/2026-09-11-memory-review.md) |
 
 ## Implementation contract
 
@@ -51,12 +52,13 @@ uncommitted work. Stacked PRs target their immediate dependency. Statuses are
 
 ## Checks required per task
 
-- [ ] Implement behavior and meaningful regression tests.
-- [ ] Run relevant release tests through `build.ps1`; no paid tests by default.
-- [ ] Check formatting, Clippy, diff whitespace and build.
-- [ ] Run preview checks for routing/pane changes.
-- [ ] Record actual results and limitations in this ledger and the PR body.
-- [ ] Push a reviewable branch and open its dependent PR; do not merge.
+- [x] Implement behavior and meaningful regression tests.
+- [x] Run relevant release tests through `build.ps1`; no paid tests by default.
+- [x] Check formatting, Clippy, diff whitespace and build.
+- [x] Run preview checks for routing/pane changes.
+- [x] Record actual results and limitations in this ledger and the PR body.
+- [x] Push a reviewable branch and open its dependent PR.
+- [ ] Merge the validated stack into `main` in dependency order (authorized 2026-09-11).
 
 Final evaluation separates infrastructure success from decision quality. Cover
 malformed provider output, disputed owners, speaker ambiguity, cross-project

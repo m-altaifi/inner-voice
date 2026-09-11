@@ -228,7 +228,10 @@ fn read(path: &Path) -> Option<Vec<Person>> {
                     // last heard *now*: the alternative is reading a missing
                     // date as 1970 and forgetting the whole file on the first
                     // run after an upgrade.
-                    last_seen: p.get("last_seen").and_then(Value::as_u64).unwrap_or_else(now),
+                    last_seen: p
+                        .get("last_seen")
+                        .and_then(Value::as_u64)
+                        .unwrap_or_else(now),
                 })
             })
             .collect(),
@@ -330,7 +333,10 @@ mod tests {
         book.people.push(person(None, 0.5));
         book.heard(0);
         assert!(!book.dirty, "an anonymous cluster never reaches the file");
-        assert!(book.people[0].last_seen > 0, "but it is still noted on screen");
+        assert!(
+            book.people[0].last_seen > 0,
+            "but it is still noted on screen"
+        );
 
         book.people.push(person(Some("Ada"), 0.5));
         book.heard(1);
