@@ -6,6 +6,7 @@
 
 mod agent;
 mod audio;
+pub mod awareness;
 mod coach;
 mod config;
 #[cfg(test)]
@@ -453,6 +454,8 @@ fn route(
         loopback,
     } = services;
     let mut history = history::History::default();
+    let mut awareness = awareness::AwarenessSnapshot::default();
+    awareness.reset(&tune.hearing().join(", "));
     let session_source = log
         .as_ref()
         .map(|l| l.path().to_string_lossy().into_owned())
@@ -529,7 +532,11 @@ fn route(
     let mut owed: Option<(bool, String, std::time::Instant)> = None;
 
     loop {
-        if history.rotate(session_clock.elapsed().as_secs()) {
+        let source = tune.hearing().join(", ");
+        let changed_source = awareness.source_changed(&source);
+        if history.rotate(session_clock.elapsed().as_secs()) || changed_source {
+            history.reset(session_clock.elapsed().as_secs());
+            awareness.reset(&source);
             owed = None;
             last_them.clear();
             previous_turn.clear();
@@ -547,7 +554,11 @@ fn route(
                 retired_research = agent.cancel();
             }
             let _ = tx.send(Msg::ContextReset);
-            let _ = tx.send(Msg::Sys("session: fresh one-hour context; relevant earlier speech remains available through recall".into()));
+            let _ = tx.send(Msg::Sys(if changed_source {
+                "session: audio source changed; fresh context; durable memory remains available".into()
+            } else {
+                "session: fresh one-hour context; relevant earlier speech remains available through recall".into()
+            }));
         }
         if owed
             .as_ref()
@@ -564,10 +575,7 @@ fn route(
                     &said
                 ),
                 memory.recall(&text, history.oldest_time()),
-                learning
-                    .as_ref()
-                    .map(|l| l.context(&text, &session_source))
-                    .unwrap_or_default(),
+                awareness.context(&text, learning.as_ref(), &session_source),
                 history.render(),
                 references.retrieve(&text)
             ));
@@ -709,10 +717,7 @@ fn route(
                             &said,
                         ),
                         memory.recall(question, history.oldest_time()),
-                        learning
-                            .as_ref()
-                            .map(|l| l.context(question, &session_source))
-                            .unwrap_or_default(),
+                        awareness.context(question, learning.as_ref(), &session_source),
                         history.render(),
                         references.retrieve(question),
                         serde_json::json!(question)
@@ -730,10 +735,7 @@ fn route(
                 let transcript = format!(
                     "{}{}{}",
                     memory.recall(&last_them, history.oldest_time()),
-                    learning
-                        .as_ref()
-                        .map(|l| l.context(&last_them, &session_source))
-                        .unwrap_or_default(),
+                    awareness.context(&last_them, learning.as_ref(), &session_source),
                     history.render()
                 );
                 if let Some(agent) = &agent {
@@ -865,6 +867,7 @@ fn route(
                 .map(|s| s.to_string_lossy().into_owned())
                 .unwrap_or_else(|| "current session (not saved)".into());
             memory.push(people::now(), &source, &who.label(), text);
+            awareness.observe(&tune.hearing().join(", "), who, text, people::now());
             if let Some(learning) = &learning {
                 learning.speech(&source, memory.len() as i64, &who.label(), text);
             }

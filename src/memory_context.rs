@@ -57,7 +57,7 @@ impl Index {
                     && if c.scope.starts_with("session:") {
                         c.scope == format!("session:{session}")
                     } else {
-                        phrase_in(&q, &c.scope)
+                        scope_matches(&q, &c.scope)
                     }
             })
             .collect();
@@ -92,7 +92,7 @@ impl Index {
     }
 }
 
-fn phrase_in(text: &str, phrase: &str) -> bool {
+pub fn scope_matches(text: &str, phrase: &str) -> bool {
     text.match_indices(phrase).any(|(i, _)| {
         let end = i + phrase.len();
         !text[..i]
