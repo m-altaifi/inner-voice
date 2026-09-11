@@ -7,8 +7,9 @@ Update the **Now** block after every work session. Nothing else here is chronolo
 
 ## Now
 
-**Merge preparation (2026-09-11):** the user authorized merging all eight PRs
-into `main` after fixes. Final review also fixed hidden memory edit results and
+**Merged (2026-09-11):** all eight PRs are merged into `main` in dependency
+order, preserving their commits. The merged tree at `48c0da0` exactly matches
+validated commit `9f01858`; GitHub shows no open PRs. Final review fixed hidden memory edit results and
 learning errors in the notice line. The new regression failed before the fix;
 189 unit tests, both integration tests, Clippy, formatting, whitespace, release
 build and the full memory GUI smoke now pass. Injected-click focus behavior
@@ -21,7 +22,7 @@ a superseded value creates a new revision; ordinary repetition stays suppressed,
 and user confirmations and dismissals persist. Three new regressions failed
 before the fixes; all four added tests now pass. The release suite passes 188
 unit tests and both integration tests, plus Clippy, formatting, whitespace and
-the offline release build. All eight PRs remain open for review. See the
+the offline release build. This review preceded the merge recorded above. See the
 [review validation](docs/validation/2026-09-11-memory-review.md).
 
 **Memory architecture (2026-09-10):** implementation is complete across the

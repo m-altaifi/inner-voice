@@ -9,19 +9,20 @@ merging the completed PR stack into `main` after fixes and validation.
 ## Delivery
 
 Private repository: `m-altaifi/inner-voice`. Preserve existing Git history and
-uncommitted work. Stacked PRs target their immediate dependency. Statuses are
+uncommitted work. Stacked PRs initially targeted their immediate dependency;
+each was retargeted to `main` and merged in order on 2026-09-11. Statuses are
 `planned`, `in_progress`, `blocked`, `in_review`, `done`; only merged work is done.
 
 | ID | Task / branch suffix | Dependency | Status | Acceptance | PR / evidence |
 |---|---|---|---|---|---|
-| M01 | `01-ledger`: architecture and task ledger | repository | in_review | accepted decisions and review sequence recorded | [PR 1](https://github.com/m-altaifi/inner-voice/pull/1) |
-| M02 | `02-foundation`: preserve existing changes | M01 | in_review | 158 unit + 2 integration tests passed | [PR 2](https://github.com/m-altaifi/inner-voice/pull/2) |
-| M03 | `03-store`: SQLite knowledge and provenance | M02 | in_review | six storage tests pass | [PR 3](https://github.com/m-altaifi/inner-voice/pull/3) |
-| M04 | `04-learning`: bounded background consolidation | M03 | in_review | two worker tests pass, including actual local HTTP and mute gating | [PR 4](https://github.com/m-altaifi/inner-voice/pull/4) |
-| M05 | `05-retrieval`: revisions and contextual recall | M04 | in_review | nine store/retrieval tests pass; scope and 4 KB limits verified | [PR 5](https://github.com/m-altaifi/inner-voice/pull/5) |
-| M06 | `06-awareness`: working memory and open items | M05 | in_review | full release suite passes; 3,602-second paced run passes with rotation and store reopen | [PR 6](https://github.com/m-altaifi/inner-voice/pull/6) |
-| M07 | `07-controls`: inspect and correct memory | M06 | in_review | 174 unit + 2 integration tests; GUI smoke and all four preview panes pass | [PR 7](https://github.com/m-altaifi/inner-voice/pull/7) |
-| M08 | `08-validation`: retention and release evidence | M07 | in_review | 189 unit + 2 integration tests; scope/correction and notice fixes, final GUI smoke pass; prior 100k replay p95 4.56 ms and paced hour recorded | [PR 8](https://github.com/m-altaifi/inner-voice/pull/8), [validation report](../validation/2026-09-10-memory.md), [review follow-up](../validation/2026-09-11-memory-review.md) |
+| M01 | `01-ledger`: architecture and task ledger | repository | done | accepted decisions and review sequence recorded | [PR 1](https://github.com/m-altaifi/inner-voice/pull/1) |
+| M02 | `02-foundation`: preserve existing changes | M01 | done | 158 unit + 2 integration tests passed | [PR 2](https://github.com/m-altaifi/inner-voice/pull/2) |
+| M03 | `03-store`: SQLite knowledge and provenance | M02 | done | six storage tests pass | [PR 3](https://github.com/m-altaifi/inner-voice/pull/3) |
+| M04 | `04-learning`: bounded background consolidation | M03 | done | two worker tests pass, including actual local HTTP and mute gating | [PR 4](https://github.com/m-altaifi/inner-voice/pull/4) |
+| M05 | `05-retrieval`: revisions and contextual recall | M04 | done | nine store/retrieval tests pass; scope and 4 KB limits verified | [PR 5](https://github.com/m-altaifi/inner-voice/pull/5) |
+| M06 | `06-awareness`: working memory and open items | M05 | done | full release suite passes; 3,602-second paced run passes with rotation and store reopen | [PR 6](https://github.com/m-altaifi/inner-voice/pull/6) |
+| M07 | `07-controls`: inspect and correct memory | M06 | done | 174 unit + 2 integration tests; GUI smoke and all four preview panes pass | [PR 7](https://github.com/m-altaifi/inner-voice/pull/7) |
+| M08 | `08-validation`: retention and release evidence | M07 | done | 189 unit + 2 integration tests; scope/correction and notice fixes, final GUI smoke pass; prior 100k replay p95 4.56 ms and paced hour recorded | [PR 8](https://github.com/m-altaifi/inner-voice/pull/8), [validation report](../validation/2026-09-10-memory.md), [review follow-up](../validation/2026-09-11-memory-review.md) |
 
 ## Implementation contract
 
@@ -58,7 +59,7 @@ uncommitted work. Stacked PRs target their immediate dependency. Statuses are
 - [x] Run preview checks for routing/pane changes.
 - [x] Record actual results and limitations in this ledger and the PR body.
 - [x] Push a reviewable branch and open its dependent PR.
-- [ ] Merge the validated stack into `main` in dependency order (authorized 2026-09-11).
+- [x] Merge the validated stack into `main` in dependency order (authorized 2026-09-11).
 
 Final evaluation separates infrastructure success from decision quality. Cover
 malformed provider output, disputed owners, speaker ambiguity, cross-project

@@ -1,7 +1,7 @@
 # Memory PR review follow-up — 2026-09-11
 
 PR #8 includes three fixes found while reviewing the completed memory stack.
-All eight dependent PRs remain open. GitHub reported them as mergeable, with no
+All eight dependent PRs were open at the start. GitHub reported them as mergeable, with no
 review comments or automated check runs at the start of this review.
 
 | Failure reproduced before the fix | Result after the fix |
@@ -61,3 +61,8 @@ one-hour paced run and paid model evaluations were not repeated.
 
 The user authorized merging all eight PRs into `main` in dependency order on
 2026-09-11, replacing the earlier instruction to leave them open for review.
+
+All eight PRs were merged into `main` in order using merge commits, ending at
+`48c0da0`. Each merge checked the expected PR head. The merged tree was compared
+with validated commit `9f01858` and matched exactly. GitHub then reported zero
+open PRs. Only the completion records were edited after that comparison.
