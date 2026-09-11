@@ -15,8 +15,8 @@ uncommitted work. Stacked PRs target their immediate dependency. Statuses are
 |---|---|---|---|---|---|
 | M01 | `01-ledger`: architecture and task ledger | repository | in_review | accepted decisions and review sequence recorded | [PR 1](https://github.com/m-altaifi/inner-voice/pull/1) |
 | M02 | `02-foundation`: preserve existing changes | M01 | in_review | 158 unit + 2 integration tests passed | [PR 2](https://github.com/m-altaifi/inner-voice/pull/2) |
-| M03 | `03-store`: SQLite knowledge and provenance | M02 | in_review | six storage tests pass | PR pending |
-| M04 | `04-learning`: bounded background consolidation | M03 | planned | structured validation, rate limits, cancellation, retries | pending |
+| M03 | `03-store`: SQLite knowledge and provenance | M02 | in_review | six storage tests pass | [PR 3](https://github.com/m-altaifi/inner-voice/pull/3) |
+| M04 | `04-learning`: bounded background consolidation | M03 | in_review | two worker tests pass, including actual local HTTP and mute gating | PR pending |
 | M05 | `05-retrieval`: revisions and contextual recall | M04 | planned | conflicts, explicit corrections, scope isolation | pending |
 | M06 | `06-awareness`: working memory and open items | M05 | planned | reset transient context, retain relevant commitments | pending |
 | M07 | `07-controls`: inspect and correct memory | M06 | planned | command panes, source inspection, learning status | pending |

@@ -462,6 +462,41 @@ fn request(
     consume(reader, p.wire, seq, live, sink)
 }
 
+/// The caller owns a separate network thread and generation. No streamed
+/// extraction is visible or durable until its complete JSON has been checked.
+pub fn extract_memory(
+    p: &Provider,
+    system: &str,
+    input: &str,
+    generation: u64,
+    live: &AtomicU64,
+) -> Result<String> {
+    if live.load(Ordering::SeqCst) != generation {
+        bail!("learning cancelled");
+    }
+    let mut output = String::new();
+    let complete = request(
+        &agent_with_timeout(Duration::from_secs(30)),
+        p,
+        system,
+        input,
+        1500,
+        generation,
+        live,
+        &mut |chunk| {
+            if output.len() + chunk.len() > 32_000 {
+                bail!("extraction exceeds response limit");
+            }
+            output.push_str(&chunk);
+            Ok(())
+        },
+    )?;
+    if !complete || live.load(Ordering::SeqCst) != generation {
+        bail!("learning cancelled");
+    }
+    Ok(output)
+}
+
 fn fail(tx: &Sender<Msg>, generation: u64, reason: &str) {
     let _ = tx.send(Msg::AdviceFailed(generation, reason.to_string()));
     let _ = tx.send(Msg::AdviceEnd(generation));
