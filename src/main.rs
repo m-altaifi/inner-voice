@@ -16,6 +16,7 @@ mod hud;
 mod knowledge;
 mod log;
 mod memory;
+pub mod memory_store;
 mod people;
 mod process;
 mod provider;
