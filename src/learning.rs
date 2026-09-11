@@ -54,11 +54,16 @@ pub struct Learning {
     stop: Arc<AtomicBool>,
     persistent: bool,
     provider_available: bool,
+    config_path: Option<PathBuf>,
     ephemeral_next: AtomicU64,
     ui: Sender<Msg>,
 }
 
 impl Learning {
+    pub fn with_config(mut self, path: Option<PathBuf>) -> Self {
+        self.config_path = path;
+        self
+    }
     pub fn context(&self, query: &str, session: &str) -> String {
         self.snapshot
             .try_read()
@@ -89,6 +94,7 @@ impl Learning {
             stop: stop.clone(),
             persistent,
             provider_available,
+            config_path: None,
             ephemeral_next: AtomicU64::new(0),
             ui: ui.clone(),
         };
@@ -117,13 +123,140 @@ impl Learning {
         }
     }
 
-    pub fn set_enabled(&self, on: bool) {
+    pub fn set_enabled(&self, on: bool) -> Result<()> {
+        if let Some(path) = &self.config_path {
+            crate::config::upsert_env(path, "IV_LEARNING", &on.to_string())?;
+        }
         if self.enabled.swap(on, Ordering::SeqCst) != on {
             self.generation.fetch_add(1, Ordering::SeqCst);
         }
         if on {
             self.send(Command::Enable);
         }
+        Ok(())
+    }
+
+    pub fn command(
+        &self,
+        command: &str,
+        awareness: &crate::awareness::AwarenessSnapshot,
+        session: &str,
+    ) -> bool {
+        let (verb, rest) = command
+            .trim()
+            .split_once(char::is_whitespace)
+            .unwrap_or((command.trim(), ""));
+        if !["/memory", "/awareness", "/commitments", "/learning"].contains(&verb) {
+            return false;
+        }
+        let answer = self.command_text(verb, rest.trim(), awareness, session);
+        let (title, text) = match answer {
+            Ok(value) => value,
+            Err(e) => ("Memory".into(), format!("{e}")),
+        };
+        let _ = self.ui.send(Msg::MemoryPanel { title, text });
+        true
+    }
+
+    fn command_text(
+        &self,
+        verb: &str,
+        rest: &str,
+        awareness: &crate::awareness::AwarenessSnapshot,
+        session: &str,
+    ) -> Result<(String, String)> {
+        if verb == "/learning" {
+            match rest {
+                "on" => self.set_enabled(true)?,
+                "off" => self.set_enabled(false)?,
+                "" => {}
+                _ => anyhow::bail!("Use /learning on or /learning off."),
+            }
+            return Ok(("Learning".into(), self.status()));
+        }
+        if verb == "/awareness" {
+            ensure!(rest.is_empty(), "Use /awareness without arguments.");
+            return Ok(("Awareness".into(), awareness.describe(Some(self))));
+        }
+        let mut words = rest.splitn(3, char::is_whitespace);
+        let action = words.next().unwrap_or("");
+        if ["confirm", "correct", "dismiss", "done"].contains(&action) {
+            ensure!(
+                (verb == "/commitments") == (action == "done"),
+                "Use /memory confirm|correct|dismiss <id>, or /commitments done <id>."
+            );
+            let id = words
+                .next()
+                .and_then(|s| s.trim_start_matches('#').parse::<i64>().ok())
+                .filter(|id| *id > 0)
+                .context("A positive item ID is required.")?;
+            let text = words.next().unwrap_or("").trim();
+            ensure!(
+                if action == "correct" {
+                    !text.is_empty() && text.len() <= 1200
+                } else {
+                    text.is_empty()
+                },
+                "Use /memory correct <id> <replacement>, or an action followed only by its ID."
+            );
+            self.edit(id, action, text);
+            return Ok((
+                "Memory".into(),
+                format!(
+                    "Requested {action} for #{id}. The result will appear here; original transcripts remain."
+                ),
+            ));
+        }
+        let snapshot = self
+            .snapshot
+            .try_read()
+            .map_err(|_| anyhow::anyhow!("Memory is updating; try again."))?;
+        if let Ok(id) = rest.trim_start_matches('#').parse::<i64>() {
+            let claim = snapshot
+                .claims
+                .iter()
+                .find(|c| c.id == id)
+                .context("No active learned item with that ID in the retained index.")?;
+            return Ok(("Evidence".into(), crate::memory_context::describe(claim)));
+        }
+        let ids: Vec<usize> = if rest.is_empty() {
+            (0..snapshot.claims.len()).collect()
+        } else {
+            snapshot.index.matching(
+                &snapshot.claims,
+                &awareness.query(rest, &snapshot.claims),
+                session,
+            )
+        };
+        let mut text = String::new();
+        let mut shown = 0;
+        for i in ids {
+            let c = &snapshot.claims[i];
+            if verb == "/commitments" && !c.open {
+                continue;
+            }
+            let line = format!("#{} · {} · {}\n{}\n\n", c.id, c.scope, c.status, c.text);
+            if text.len() + line.len() > 12_000 || shown >= 20 {
+                break;
+            }
+            text.push_str(&line);
+            shown += 1;
+        }
+        if shown == 0 {
+            text.push_str("No matching learned items. Name the project and topic, or wait for eligible new speech to be consolidated.\n\n");
+        }
+        drop(snapshot);
+        text.push_str("/memory <id> shows the original evidence.\n/memory confirm <id>\n/memory correct <id> <replacement>\n/memory dismiss <id>\n/commitments done <id>\n\nDismissal hides learned knowledge; original transcripts remain. Confirmed means endorsed by you, not independently verified.\n\n");
+        text.push_str(&self.status());
+        Ok((
+            if verb == "/commitments" {
+                "Commitments and open questions"
+            } else {
+                "Learned memory"
+            }
+            .into(),
+            text,
+        ))
     }
 
     pub fn enabled(&self) -> bool {
@@ -239,6 +372,7 @@ fn worker(rx: Receiver<Command>, c: &WorkerConfig) -> Result<()> {
     let mut maintenance = Instant::now() - Duration::from_secs(60);
     let mut serial = 0;
     let mut last_error = String::new();
+    let mut last_status = String::new();
     while !c.stop.load(Ordering::SeqCst) {
         let mut edited = None;
         match rx.recv_timeout(Duration::from_millis(100)) {
@@ -353,10 +487,65 @@ fn worker(rx: Receiver<Command>, c: &WorkerConfig) -> Result<()> {
             s.busy = busy;
         }
         if let Some(message) = edited {
-            let _ = c.ui.send(Msg::Sys(message));
+            let _ = c.ui.send(Msg::MemoryPanel {
+                title: "Memory updated".into(),
+                text: message,
+            });
+        }
+        let enabled = c.enabled.load(Ordering::SeqCst);
+        let brief = if !enabled {
+            "learning off"
+        } else if !last_error.is_empty() {
+            "learning needs attention"
+        } else if c.provider.is_none() {
+            "learning: no provider"
+        } else if !c.allowed.load(Ordering::SeqCst) {
+            "learning paused"
+        } else if busy {
+            "learning"
+        } else {
+            "learning ready"
+        };
+        let detail = format!(
+            "{brief} · {pending} pending · {failed} failed · last success Unix {last_success}"
+        );
+        if detail != last_status {
+            let _ = c.ui.send(Msg::LearningStatus {
+                enabled,
+                brief: brief.into(),
+                detail: detail.clone(),
+            });
+            last_status = detail;
         }
     }
     Ok(())
+}
+
+pub fn preview_command(command: &str) -> Option<(String, String)> {
+    let verb = command.split_whitespace().next()?;
+    let (title, body) = match verb {
+        "/memory" => (
+            "Learned memory — preview",
+            "#1 · Orion · reported\nQA approval is pending.\n\nEvidence: synthetic preview, speaker YOU.\n/memory <id> shows evidence; /memory correct <id> <replacement> edits a real learned item.",
+        ),
+        "/commitments" => (
+            "Commitments — preview",
+            "#1 · Orion · open\nQA approval is pending.\n\n/commitments done <id> completes an item in a live session.",
+        ),
+        "/awareness" => (
+            "Awareness — preview",
+            "Audio source: synthetic preview\nSpeakers observed: YOU, THEM\nProject named in speech: Orion\n\nCurrent intent and outside events are unknown.",
+        ),
+        "/learning" => (
+            "Learning — preview",
+            "Learning is off in preview. No audio, database or provider requests are used.",
+        ),
+        _ => return None,
+    };
+    Some((
+        title.into(),
+        format!("{body}\n\nPreview only. This is sample content; nothing is saved."),
+    ))
 }
 
 /// Tail only sources registered after enabling learning; never enumerate old
@@ -432,6 +621,48 @@ fn scan_sources(store: &mut Store, folder: Option<&Path>, keep_days: u64) -> Res
 mod tests {
     use super::*;
     use std::io::{Read, Write};
+
+    #[test]
+    fn local_commands_validate_ids_and_never_fall_through_to_advice() {
+        let (tx, rx) = crossbeam_channel::unbounded();
+        let learning = Learning::new(None, None, false, 0, tx);
+        let awareness = crate::awareness::AwarenessSnapshot::default();
+        assert!(learning.command("/memory correct -1 invented", &awareness, "session"));
+        assert!(learning.command("/learning maybe", &awareness, "session"));
+        assert!(learning.command("/commitments done 1 extra", &awareness, "session"));
+        assert!(!learning.command("/memory-card", &awareness, "session"));
+        let panels: Vec<_> = rx
+            .try_iter()
+            .filter_map(|m| {
+                if let Msg::MemoryPanel { text, .. } = m {
+                    Some(text)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        assert_eq!(panels.len(), 3);
+        assert!(panels[0].contains("positive item ID"));
+        assert!(!learning.enabled());
+    }
+
+    #[test]
+    fn learning_toggle_persists_without_exposing_other_settings() {
+        let folder = directory("config");
+        let path = folder.join(".env");
+        std::fs::write(&path, "IV_MANUAL=true\nTEST_PRIVATE_VALUE=keep\n").unwrap();
+        let (tx, _) = crossbeam_channel::unbounded();
+        let learning = Learning::new(None, None, false, 0, tx).with_config(Some(path.clone()));
+        learning.set_enabled(true).unwrap();
+        assert!(learning.enabled());
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("IV_LEARNING=true"));
+        assert!(text.contains("TEST_PRIVATE_VALUE=keep"));
+        learning.set_enabled(false).unwrap();
+        assert!(!learning.enabled());
+        drop(learning);
+        std::fs::remove_dir_all(folder).unwrap();
+    }
 
     fn directory(label: &str) -> PathBuf {
         static NEXT: AtomicU64 = AtomicU64::new(0);
